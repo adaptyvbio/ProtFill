@@ -23,13 +23,8 @@ dependencies = [
 ]
 
 [project.scripts]
-ml4-try-run = "ml4.scripts.run:main"
-ml4-run = "ml4.scripts.run_and_log:main"
-ml4-update-run = "ml4.scripts.update_results:main"
-ml4-try-search = "ml4.scripts.search:main"
-ml4-search = "ml4.scripts.search_and_log:main"
-ml4-update-search = "ml4.scripts.update_search_results:main"
-ml4-run-multi = "ml4.scripts.aws_runner:main"
+ml4-try-run = "proteinflow.scripts.run:main"
+ml4-run = "proteinflow.scripts.run_and_log:main"
 
 
 [tool.setuptools.packages]

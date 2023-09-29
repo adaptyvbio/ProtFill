@@ -1,7 +1,0 @@
-experiments/*
-exp*
-.tmp
-sample_data/*
-data/*
-output
-wandb

@@ -5,37 +5,16 @@ import torch.nn.functional as F
 import numpy as np
 import esm
 from einops import repeat, rearrange
-from copy import copy, deepcopy
-import pandas as pd
-import random
-import time
+from copy import deepcopy
 from torchdyn.core import NeuralODE
 import os
 from proteinflow.data import ProteinEntry
 
-from protfill.layers.egnn_new import (
-    EGNN_Decoder,
-    EGNN_Encoder,
-    EGNNRefine_Encoder,
-    EGNNRefine_Decoder,
-)
 from protfill.layers.gvp import GVPOrig_Decoder, GVPOrig_Encoder
 from protfill.layers.gvp_new import GVP_Decoder, GVP_Encoder
-from protfill.layers.mpnn import (
-    MPNN_Encoder,
-    MPNN_Decoder_OS,
-    MPNN_Decoder_AR,
-    MPNN_Decoder_EU,
-)
-from protfill.layers.genprot import GenProt_Decoder, GenProt_Encoder
-from protfill.layers.egnn import EGNNOrig_Encoder, EGNNOrig_Decoder
-from protfill.layers.egnn_pyg import EGNNGeom_Encoder, EGNNGeom_Decoder
-from protfill.layers.egnn_orig import EGNNLucid_Encoder, EGNNLucid_Decoder
 from protfill.utils.model_utils import *
-from protfill.layers.sake import RealSAKE_Encoder, RealSAKE_Decoder
-from protfill.diffusion import Diffuser, get_orientations, FlowMatcher, safe_inverse
+from protfill.diffusion import Diffuser, get_orientations, FlowMatcher
 from torch.utils.checkpoint import checkpoint
-import pickle
 
 
 def combine_decoders(coords_decoder, seq_decoder, predict_angles, only_use_linear_for_str=False):
@@ -363,30 +342,12 @@ class ProteinModel(nn.Module):
     ):
         super(ProteinModel, self).__init__()
         encoders = {
-            "egnn": EGNN_Encoder,
-            "mpnn": MPNN_Encoder,
             "gvp": GVP_Encoder,
             "gvp_orig": GVPOrig_Encoder,
-            "genprot": GenProt_Encoder,
-            "egnn_orig": EGNNOrig_Encoder,
-            "egnn_refine": EGNNRefine_Encoder,
-            "egnn_geom": EGNNGeom_Encoder,
-            "egnn_lucid": EGNNLucid_Encoder,
-            "real_sake": RealSAKE_Encoder,
         }
         decoders = {
-            "egnn": EGNN_Decoder,
-            "mpnn": MPNN_Decoder_OS,
-            "mpnn_auto": MPNN_Decoder_AR,
-            "mpnn_enc": MPNN_Decoder_EU,
             "gvp": GVP_Decoder,
             "gvp_orig": GVPOrig_Decoder,
-            "genprot": GenProt_Decoder,
-            "egnn_orig": EGNNOrig_Decoder,
-            "egnn_refine": EGNNRefine_Decoder,
-            "egnn_geom": EGNNGeom_Decoder,
-            "egnn_lucid": EGNNLucid_Decoder,
-            "real_sake": RealSAKE_Decoder,
         }
         auto_decoders = ["mpnn_auto"]
         force_update_decoders = ["mpnn", "mpnn_enc"]

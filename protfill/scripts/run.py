@@ -3,28 +3,22 @@ import os.path
 import time, os
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
 import torch.nn as nn
 import os.path
 import warnings
 import random
-from protfill.utils.data import CustomDataset
-
-# from proteinflow.data.torch import ProteinLoader
 from proteinflow import ProteinLoader, ProteinDataset
 from proteinflow.data import ProteinEntry
 from protfill.model import (
     ProteinModel,
 )
 from tqdm import tqdm
-from protfill.utils.aws_utils import get_trained_model_path
 import optuna
 from protfill.utils.model_utils import *
 import sys
 from copy import deepcopy
 from math import sqrt
 import wandb
-import pickle
 from itertools import product
 
 
@@ -500,9 +494,7 @@ def run(args, trial=None):
         if not os.path.exists(base_folder + subfolder):
             os.makedirs(base_folder + subfolder)
 
-    PATH = ""
-    if args.load_experiment is not None:
-        PATH = get_trained_model_path(args.load_experiment, args.load_epoch_mode)
+    PATH = args.load_experiment or ""
 
     logfile = base_folder + "log.txt"
     if not PATH:
@@ -514,13 +506,6 @@ def run(args, trial=None):
         "shuffle_batches": True,
         "pin_memory": False,
         "num_workers": 4,
-        
-        # "lower_limit": args.lower_masked_limit,
-        # "upper_limit": args.upper_masked_limit,
-        # "mask_whole_chains": args.mask_whole_chains,
-        # "force_binding_sites_frac": args.train_force_binding_sites_frac,
-        # "mask_frac": args.masking_probability,
-        # "mask_all_cdrs": args.mask_all_cdrs,
     }
 
     DATA_PARAM = {
@@ -577,14 +562,14 @@ def run(args, trial=None):
     else:
         use_frac = 1.0
     if args.debug_file:
-        train_set = CustomDataset(
+        train_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, "train"),
             debug_file_path=args.debug_file,
             force_binding_sites_frac=args.train_force_binding_sites_frac,
             **DATA_PARAM,
         )
         train_loader = ProteinLoader(train_set, **LOAD_PARAM)
-        valid_set = CustomDataset(
+        valid_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, "valid"),
             debug_file_path=args.debug_file,
             force_binding_sites_frac=args.val_force_binding_sites_frac,
@@ -598,7 +583,7 @@ def run(args, trial=None):
             folder, clustering_dict_path = "valid", validation_dict
         else:
             folder, clustering_dict_path = "test", test_dict
-        test_set = CustomDataset(
+        test_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, folder),
             clustering_dict_path=clustering_dict_path,
             shuffle_clusters=False,
@@ -608,7 +593,7 @@ def run(args, trial=None):
         test_set.set_cdr(args.test_cdr)
         test_loader = ProteinLoader(test_set, **LOAD_PARAM)
     elif args.predict_file is not None:
-        test_set = CustomDataset(
+        test_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, "test"),
             debug_file_path=args.predict_file,
             force_binding_sites_frac=args.val_force_binding_sites_frac,
@@ -617,7 +602,7 @@ def run(args, trial=None):
         test_set.set_cdr(args.test_cdr)
         test_loader = ProteinLoader(test_set, **LOAD_PARAM)
     else:
-        train_set = CustomDataset(
+        train_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, "train"),
             clustering_dict_path=training_dict,
             use_fraction=use_frac,
@@ -627,7 +612,7 @@ def run(args, trial=None):
         )
         train_loader = ProteinLoader(train_set, **LOAD_PARAM)
         # valid_set = train_set
-        valid_set = CustomDataset(
+        valid_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, "valid"),
             clustering_dict_path=validation_dict,
             shuffle_clusters=False,

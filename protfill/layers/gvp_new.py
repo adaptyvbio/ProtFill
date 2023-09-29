@@ -1,12 +1,10 @@
-import torch, functools
 from torch import nn
+import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from protfill.layers.base_models import *
 from protfill.utils.model_utils import get_vectors, pna_aggregate, gather_nodes
 from math import sqrt
-from protfill.layers.egnn_new import GlobalLinearAttention
-from copy import deepcopy
 
 
 def batch_select(input, indexes):
@@ -440,7 +438,6 @@ class GVPLayer(nn.Module):
         norm_divide=False,
         update_edges=True,
         use_pna=False,
-        use_attention=False,
         graph_context_dim=0,
         less_dropout=False,
         use_node_dropout=False,
@@ -532,13 +529,6 @@ class GVPLayer(nn.Module):
                 (self.seo, self.veo), n_dims=5, norm_divide=norm_divide
             )  # nn.LayerNorm(self.seo)
 
-        self.use_attention = use_attention
-        if self.use_attention:
-            self.attn = GlobalLinearAttention(
-                dim=self.sni * 2 + self.sei, heads=2, dim_head=64
-            )
-            self.global_tokens = nn.Parameter(torch.randn(8, self.sni * 2 + self.sei))
-
         self.node_dropout = Dropout(drop_rate)
         self.edge_dropout = Dropout(drop_rate)
 
@@ -583,14 +573,6 @@ class GVPLayer(nn.Module):
             mask_edge = gather_nodes(mask.unsqueeze(-1), indexes).squeeze(-1)
         else:
             mask_edge = None
-
-        if global_tokens is None and self.use_attention:
-            global_tokens = repeat(
-                self.global_tokens, "n d -> b n d", b=nodes[0].shape[0]
-            )
-        if self.use_attention:
-            nodes_att, global_tokens = self.attn(input[0], global_tokens)
-            input = (nodes_att, input[1])
 
         input_ = (input[0].clone(), input[1].clone())
         for gvp in self.gvp:
