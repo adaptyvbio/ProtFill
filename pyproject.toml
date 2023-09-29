@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "protfill"
+version = "0.0.1"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "optuna",
+    "p_tqdm",
+    "fair-esm",
+    "pandas",
+    "giotto-tda",
+    "boto3",
+    "yacs",
+    "einops",
+    "click",
+    "proteinflow>=2.2.1",
+    "wandb",
+    "torchdyn==1.0.3",
+]
+
+[project.scripts]
+ml4-try-run = "ml4.scripts.run:main"
+ml4-run = "ml4.scripts.run_and_log:main"
+ml4-update-run = "ml4.scripts.update_results:main"
+ml4-try-search = "ml4.scripts.search:main"
+ml4-search = "ml4.scripts.search_and_log:main"
+ml4-update-search = "ml4.scripts.update_search_results:main"
+ml4-run-multi = "ml4.scripts.aws_runner:main"
+
+
+[tool.setuptools.packages]
+find = {}
