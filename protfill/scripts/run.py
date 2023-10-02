@@ -234,7 +234,7 @@ def initialize_sequence(seq, chain_M, seq_init_mode):
 
 
 def compute_loss(model_args, args, model, epoch):
-    output, mask_for_loss, S, X = get_prediction(model, model_args, args, barycenter=True)
+    output, mask_for_loss, S, X = get_prediction(model, model_args, args)
 
     losses = defaultdict(lambda: torch.tensor(0.0).to(args.device))
     v_w = 0.0 if epoch < args.violation_loss_start_epoch else args.violation_loss_weight
@@ -245,7 +245,6 @@ def compute_loss(model_args, args, model, epoch):
                     seq_0=S,
                     logits_predicted=out["seq"],
                     mask=mask_for_loss,
-                    timestep=out["timestep"],
                 )
             else:
                 losses["seq"] += get_seq_loss(
@@ -278,7 +277,6 @@ def compute_loss(model_args, args, model, epoch):
                 rotation_predicted=out["rotation"],
                 rotation_true=out["rotation_gt"],
                 mask=mask_for_loss,
-                timestep=out["timestep"],
             )
     seq_predict = output[-1].get("seq")
     coords_predict = output[-1].get("coords")
@@ -290,9 +288,6 @@ def compute_loss(model_args, args, model, epoch):
         mask_for_loss,
         X,
         coords_predict,
-        ignore_unknown=False,
-        predict_all_atoms=True,
-        predict_oxygens=False,
     )
     full_rmsd = 0
     if isinstance(rmsd, list):
@@ -337,7 +332,7 @@ def get_model_args(batch, device):
     return model_args
 
 
-def get_prediction(model, model_args, args, chain_dict=None, barycenter=False):
+def get_prediction(model, model_args, args, chain_dict=None):
     mask = model_args["mask"]
     model_args["X"][~mask.bool()] = 0.0
     chain_M = model_args["chain_M"]

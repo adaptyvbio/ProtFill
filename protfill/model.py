@@ -3,18 +3,13 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
-import esm
 from einops import repeat, rearrange
 from copy import deepcopy
-from torchdyn.core import NeuralODE
-import os
-from proteinflow.data import ProteinEntry
 
 from protfill.layers.gvp import GVPOrig_Decoder, GVPOrig_Encoder
 from protfill.layers.gvp_new import GVP_Decoder, GVP_Encoder
 from protfill.utils.model_utils import *
-from protfill.diffusion import Diffuser, get_orientations, FlowMatcher
-from torch.utils.checkpoint import checkpoint
+from protfill.diffusion import Diffuser, get_orientations
 
 
 class Rotation:
@@ -486,7 +481,7 @@ class ProtFill(nn.Module):
                     coords_X[chain_M_bool] = self.random_rotation(coords_X, chain_M_bool)
                     X[:, :, :4] = coords_X
 
-        return X, rotation, translation
+        return X, rotation
 
     def initialize_sequence(
         self,
@@ -507,7 +502,7 @@ class ProtFill(nn.Module):
             else:
                 seq[chain_M.bool()] = 0
 
-        return seq, distribution
+        return seq
 
     def extract_features(
         self,
@@ -525,21 +520,19 @@ class ProtFill(nn.Module):
         Extract features from the input sequence and structure
         """
 
-        rotation_gt, seq_t, translation_gt, distribution = None, None, None, None
+        rotation_gt = None
 
         if cycle == 0 and corrupt:
             if isinstance(timestep, int):
                 timestep = timestep * torch.ones(X.shape[0], device=X.device)
-            seq, distribution= self.initialize_sequence(
+            seq = self.initialize_sequence(
                 seq,
                 chain_M,
                 timestep=timestep,
             )
-            seq_t = seq.clone()
             (
                 X,
                 rotation_gt,
-                translation_gt,
             ) = self.noise_coords(
                 X,
                 chain_M,
@@ -1091,10 +1084,7 @@ class ProtFill(nn.Module):
         output = []
         seq = deepcopy(S)
         coords = deepcopy(X)
-        if isinstance(self.diffusion, FlowMatcher):
-            timestep = torch.rand(X.shape[:1])
-            # timestep = torch.ones(X.shape[:1])
-        elif self.diffusion is not None:
+        if self.diffusion is not None:
             timestep = torch.randint(1, self.num_diffusion_steps + 1, size=X.shape[:1])
         else:
             timestep = None

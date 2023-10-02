@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from protfill.layers.base_models import *
-from protfill.utils.model_utils import get_vectors, pna_aggregate, gather_nodes
+from protfill.utils.model_utils import get_vectors, gather_nodes
 from math import sqrt
 
 

@@ -3,7 +3,6 @@ import torch
 from torch import nn
 import math
 from einops import repeat, rearrange
-import time
 from protfill.utils.model_utils import get_seq_loss
 import pandas as pd
 
@@ -276,8 +275,7 @@ class Diffuser:
         pos_std=None,
         noise_around_interpolation=False,
         no_added_noise=False,
-        cosine_cutoff=0.8,
-        all_x0=False,
+        cosine_cutoff=0.99,
     ):
         """
         Parameters
@@ -316,7 +314,6 @@ class Diffuser:
         self.pos_std = pos_std
         self.noise_around_interpolation = noise_around_interpolation
         self.no_added_diff_noise = no_added_noise
-        self.all_x0 = all_x0
 
     @staticmethod
     def random_uniform_so3(size, device="cpu"):
@@ -793,7 +790,6 @@ class Diffuser:
             alpha_bar = repeat(
                 self.var_sched_rot.alpha_bars[timestep], "b -> b 1 1 1"
             ).to(X.device)
-            orientations_orig = orientations.clone()
             orientations_rotated_ = self._scale_rot(torch.sqrt(alpha_bar), orientations)
             rotation_matrices = self._ig_so3(
                 repeat(timestep, "b -> b l", l=X.shape[1]), device=X.device
@@ -801,13 +797,8 @@ class Diffuser:
             orientations_rotated = torch.einsum(
                 "b l i k, b l k d -> b l i d", rotation_matrices, orientations_rotated_
             )
-            if not self.all_x0:
-                log_R = self._rot_to_so3vec(rotation_matrices)  # (B, total_L, 3)
-                rotation_so3 = log_R / (torch.sqrt(1 - alpha_bar.squeeze(-1)) + 1e-7)
-            else:
-                R = torch.einsum("b n i j, b n j k -> b n i k", orientations_rotated, safe_inverse(orientations_orig))
-                R = safe_inverse(R)
-                rotation_so3 = self._rot_to_so3vec(R)
+            log_R = self._rot_to_so3vec(rotation_matrices)  # (B, total_L, 3)
+            rotation_so3 = log_R / (torch.sqrt(1 - alpha_bar.squeeze(-1)) + 1e-7)
         X[chain_M_bool] = (
             X[:, :, [2]]
             + torch.einsum("b n i d, b n k d -> b n k i", orientations_rotated, local_coords)
@@ -974,25 +965,21 @@ class Diffuser:
             ]
         # rotation
         if predict_angles:
-            if not self.all_x0:
-                alpha_bar = repeat(
-                    self.var_sched_rot.alpha_bars[timestep], "b -> b 1 1 1"
-                ).to(coords.device, coords.dtype)
-                beta = repeat(self.var_sched_rot.betas[timestep], "b -> b 1 1 1").to(
-                    coords.device, coords.dtype
-                )
-                rotation_predicted = rotation_predicted * torch.sqrt(
-                    1 - alpha_bar.squeeze(-1)
-                )
-                rotation_predicted = self._so3vec_to_rot(rotation_predicted)
-                rotation_inverse = safe_inverse(rotation_predicted)
-                exp = torch.einsum(
-                    "b l i j, b l j k -> b l i k", rotation_inverse, orientations
-                )
-                x0 = self._scale_rot(1 / torch.sqrt(alpha_bar), exp)
-            else:
-                R = self._so3vec_to_rot(rotation_predicted).to(dtype=torch.float64)
-                x0 = torch.einsum("b n i j, b n j k -> b n i k", R, orientations)
+            alpha_bar = repeat(
+                self.var_sched_rot.alpha_bars[timestep], "b -> b 1 1 1"
+            ).to(coords.device, coords.dtype)
+            beta = repeat(self.var_sched_rot.betas[timestep], "b -> b 1 1 1").to(
+                coords.device, coords.dtype
+            )
+            rotation_predicted = rotation_predicted * torch.sqrt(
+                1 - alpha_bar.squeeze(-1)
+            )
+            rotation_predicted = self._so3vec_to_rot(rotation_predicted)
+            rotation_inverse = safe_inverse(rotation_predicted)
+            exp = torch.einsum(
+                "b l i j, b l j k -> b l i k", rotation_inverse, orientations
+            )
+            x0 = self._scale_rot(1 / torch.sqrt(alpha_bar), exp)
             orientations = self._get_rotation_mean(x0, orientations, timestep=timestep)
             if not self.no_added_diff_noise:
                 R = self._ig_so3(
@@ -1065,7 +1052,7 @@ class Diffuser:
             loss_pos = (factor * diff * mask).sum() / (mask.sum().float() + 1e-8)
         return loss_pos
 
-    def get_rotation_loss(self, rotation_true, rotation_predicted, mask, timestep):
+    def get_rotation_loss(self, rotation_true, rotation_predicted, mask):
         """
         Get the loss for the angles
 
@@ -1092,7 +1079,7 @@ class Diffuser:
         ) / mask.sum(1)
         return loss.sum()
 
-    def get_sequence_loss(self, seq_0, logits_predicted, mask, timestep):
+    def get_sequence_loss(self, seq_0, logits_predicted, mask):
         """
         Get the loss for the sequence
 
@@ -1124,61 +1111,3 @@ class Diffuser:
             weight=0.1,
         )
         return loss
-
-
-class FlowMatcher(Diffuser):
-    def noise_structure(
-        self,
-        X,
-        chain_M,
-        predict_angles,
-        timestep,
-        inference=False,
-        variance_scale=1,
-        sigma=0,
-    ):
-        CA_start = X[:, :, 2].clone()
-        std, rotation = None, None
-        X_noised, *_, std = super().noise_structure(
-            X=X,
-            chain_M=chain_M,
-            predict_angles=False,
-            timestep=None,
-            inference=True,
-            variance_scale=variance_scale,
-        )
-        orientations, _, local_coords = get_orientations(X_noised)
-        timestep = repeat(timestep, "b -> b 1 1").to(X.device)
-        if (timestep > 1).any():
-            timestep = timestep / self.num_steps
-        if inference:
-            mu = X_noised[:, :, 2]
-            # rotation = None
-        else:
-            mu = (1 - timestep) * CA_start + timestep * X_noised[:, :, 2, :]
-            # rotation_noised = self.random_uniform_so3(size=(X.shape[0], X.shape[1]), device=X.device).to(dtype=X.dtype)
-            # rot = safe_inverse(orientations) @ rotation_noised
-            # orientations = orientations @ self._scale_rot(timestep.unsqueeze(-1), rot)
-            # rotation = safe_inverse(rotation_noised) @ orientations
-            # rotation = self._rot_to_so3vec(rotation)
-        if not inference and sigma > 0:
-            mu = mu + torch.randn_like(mu) * sigma
-        translation = X_noised[:, :, 2] - CA_start
-        # translation = CA_new - X_start
-        X_new = mu.unsqueeze(2) + torch.einsum(
-            "b n i d, b n k d -> b n k i", orientations, local_coords
-        )
-        return X_new, rotation, translation, std
-
-    def denoise_structure(
-        self,
-        coords,
-        std_coords,
-        orientations,
-        translation_predicted,
-        rotation_predicted,
-        predict_angles,
-        timestep,
-        diff_predict=None,
-    ):
-        raise NotImplementedError

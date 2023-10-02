@@ -14,42 +14,12 @@ ALPHABET_DICT[0] = "X"
 REVERSE_ALPHABET_DICT["X"] = 0
 
 
-def pna_aggregate(features, mask):
-    """PNA aggregation of features shaped `(B, L, N, K)` from neighbors to nodes"""
-
-    d = mask.unsqueeze(-1).sum(-2)
-    # denom = ...
-    # S_pos = torch.log(d + 1) / denom
-    # S_neg = 1 / S_pos
-    # print(f'{features.shape=}, {d.shape=}')
-    # f_mean = features.sum(2) / d.unsqueeze(-1)
-    # print(d)
-    # d_mask = d.squeeze(-1) == 0
-    n_mask = mask == 0
-    d_mask = d.squeeze(-1) == 0
-    if len(features.shape) == 5:
-        d = d.unsqueeze(-1)
-        d_mask = d_mask.squeeze(-1)
-    f_mean = features.sum(2) / (d + 1e-6)
-    feat = features.clone()
-    feat[n_mask] = -float("inf")
-    f_max = feat.max(2)[0]
-    feat[n_mask] = float("inf")
-    f_min = features.min(2)[0]
-    f = torch.cat([f_mean, f_max, f_min], 2)
-    f[d_mask] = 0
-    return f
-
-
 def metrics(
     S,
     log_probs,
     mask,
     X,
     X_pred,
-    ignore_unknown,
-    predict_all_atoms=False,
-    predict_oxygens=False,
 ):
     if log_probs is None:
         true_false = torch.tensor(0)
@@ -57,34 +27,18 @@ def metrics(
     else:
         max_prob, S_argmaxed = torch.max(torch.softmax(log_probs, -1), -1)  # [B, L]
         pp = torch.exp(-(torch.log(max_prob) * mask).sum(-1) / mask.sum(-1)).sum()
-        if ignore_unknown:
-            S_argmaxed += 1
         true_false = (S == S_argmaxed).float()
 
-    if not isinstance(X_pred, list):
-        X_pred = [X_pred]
-    for i, x in enumerate(X_pred):
-        if x is None:
-            rmsd = torch.tensor(0)
-        else:
-            rmsd = []
-            dims = [[2]]
-            if predict_all_atoms:
-                if predict_oxygens:
-                    dims.append([0, 1, 3])
-                else:
-                    dims.append([0, 1])
-            for dim in dims:
-                mask_ = mask.unsqueeze(-1).unsqueeze(-1)
-                num_atoms = len(dim)
-                sqd = (X[:, :, dim, :] - x[:, :, dim, :]) ** 2
-                mean_sqd = (sqd * mask_).sum(-1).sum(-1).sum(-1)
-                mean_sqd = mean_sqd / (mask.sum(-1) * num_atoms)
-                rmsd.append(torch.sqrt(mean_sqd).sum().detach())
-            if len(rmsd) == 1:
-                rmsd = rmsd[0]
-        if len(X_pred) > 1:
-            print(f"{i}: {rmsd / x.shape[0]}")
+    if X_pred is None:
+        rmsd = torch.tensor(0)
+    else:
+        mask_ = mask.unsqueeze(-1).unsqueeze(-1)
+        num_atoms = 1
+        sqd = (X[:, :, [2], :] - X_pred[:, :, [2], :]) ** 2
+        mean_sqd = (sqd * mask_).sum(-1).sum(-1).sum(-1)
+        mean_sqd = mean_sqd / (mask.sum(-1) * num_atoms)
+        rmsd = torch.sqrt(mean_sqd).sum().detach()
+        
     return true_false.detach(), rmsd, pp.detach()
 
 
