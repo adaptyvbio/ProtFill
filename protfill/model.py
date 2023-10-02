@@ -180,8 +180,6 @@ class ProteinFeatures(nn.Module):
         feature_types=None,
         linear=False,
     ):
-        if feature_types is None:
-            feature_types = []
         if timestep is not None:
             self.timestep = timestep
         b = X[:, :, 2, :] - X[:, :, 0, :]
@@ -281,31 +279,7 @@ class ProteinFeatures(nn.Module):
         E = self.edge_embedding(E)
         E = self.norm_edges(E)
 
-        vectors = []
-        if "backbone_orientation" in feature_types:
-            orientation = torch.zeros((X.shape[0], X.shape[1], 2, 3)).to(X.device)
-            orientation[:, 1:, 0] = X[:, 1:, 2] - X[:, :-1, 2]
-            orientation[:, :-1, 1] = X[:, :-1, 2] - X[:, 1:, 2]
-            orientation /= torch.norm(orientation, dim=-1, keepdim=True) + 1e-7
-            orientation *= mask[..., None, None]
-            orientation[:, 1:, 0] *= mask[:, :-1, None]
-            orientation[:, :-1, 1] *= mask[:, 1:, None]
-            vectors.append(orientation)
-        if "c_beta" in feature_types:
-            diff = (Cb - Ca).unsqueeze(2)
-            vectors.append((diff) / (torch.norm(diff, dim=-1, keepdim=True) + 1e-7))
-        if len(vectors) > 0:
-            vectors = torch.cat(vectors, dim=2)
-        else:
-            vectors = None
-        scalars = []
-        if "dihedral_recomputed" in feature_types:
-            scalars.append(self._dihedral(X, mask))
-        if len(scalars) > 0:
-            scalars = torch.cat(scalars, dim=2)
-        else:
-            scalars = None
-        return E, E_idx, vectors, scalars, timestep_embedding
+        return E, E_idx, timestep_embedding
 
 
 class ProtFill(nn.Module):
@@ -587,12 +561,7 @@ class ProtFill(nn.Module):
     def noise_coords(
         self,
         X,
-        V_structure,
-        vector_node_struct,
         chain_M,
-        chain_encoding,
-        mask,
-        transform=None,
         timestep=None,
     ):
         """
@@ -627,27 +596,8 @@ class ProtFill(nn.Module):
                     coords_X[chain_M_bool] = masked_X
                     coords_X[chain_M_bool] = self.random_rotation(coords_X, chain_M_bool)
                     X[:, :, :4] = coords_X
-                if V_structure is not None:
-                    V_structure[chain_M_bool] = 0
-                if vector_node_struct is not None:
-                    vector_node_struct[chain_M_bool] = self.random_unit_vectors_like(
-                        vector_node_struct[chain_M_bool]
-                    )
-        if transform is not None:
-            X[:, :, :4] = transform(X[:, :, :4])
 
-        return X, V_structure, vector_node_struct, rotation, translation
-
-    def generate_embeddings(self, X, S, mask, E, E_idx, vector_node_struct, V_struct, chain_M):
-        if not self.str_features:
-            h_V = torch.zeros(
-                (E.shape[0], E.shape[1], self.hidden_dim), device=E.device
-            )  # node embeddings = zeros
-        else:
-            h_V = self.W_v_str(V_struct)
-
-        h_E = self.W_e(E)
-        return h_V, h_E, E_idx, vector_node_struct
+        return X, rotation, translation
 
     def find_chains_idx(self, residue_idx):
         diffs = residue_idx[:, 1:] - residue_idx[:, :-1]
@@ -727,11 +677,7 @@ class ProtFill(nn.Module):
     def initialize_sequence(
         self,
         seq,
-        V_sequence,
         chain_M,
-        mask,
-        residue_idx,
-        vector_node_seq,
         timestep=None,
     ):
         """
@@ -740,27 +686,24 @@ class ProtFill(nn.Module):
 
         distribution = None
         if self.predict_sequence or self.co_design != "none" or self.mask_sequence:
-            if V_sequence is not None:
-                V_sequence[chain_M.bool()] = 0
             if self.diffusion:
                 seq, distribution = self.diffusion.noise_sequence(
                     seq, chain_M, timestep
                 )
-            seq[chain_M.bool()] = 0
+            else:
+                seq[chain_M.bool()] = 0
 
-        return seq, distribution, V_sequence, vector_node_seq
+        return seq, distribution
 
     def extract_features(
         self,
         seq,
         chain_M,
-        optional_features,
         mask,
         residue_idx,
         chain_encoding_all,
         X,
         cycle,
-        transform=None,
         timestep=None,
         corrupt=True,
     ):
@@ -768,44 +711,29 @@ class ProtFill(nn.Module):
         Extract features from the input sequence and structure
         """
 
-        vector_node_seq = optional_features.get("vector_node_seq")
-        vector_node_struct = optional_features.get("vector_node_struct")
-        V_sequence = optional_features["scalar_seq"]
-        V_structure = optional_features["scalar_struct"]
         rotation_gt, seq_t, translation_gt, distribution = None, None, None, None
 
         if cycle == 0 and corrupt:
             if isinstance(timestep, int):
                 timestep = timestep * torch.ones(X.shape[0], device=X.device)
-            seq, distribution, V_sequence, vector_node_seq = self.initialize_sequence(
+            seq, distribution= self.initialize_sequence(
                 seq,
-                V_sequence,
                 chain_M,
-                mask,
-                residue_idx,
-                vector_node_seq,
                 timestep=timestep,
             )
             seq_t = seq.clone()
             (
                 X,
-                V_structure,
-                vector_node_struct,
                 rotation_gt,
                 translation_gt,
             ) = self.noise_coords(
                 X,
-                V_structure,
-                vector_node_struct,
                 chain_M,
-                chain_encoding_all,
-                mask,
-                transform=transform,
                 timestep=timestep,
             )
         timestep_factor = 25 / self.num_diffusion_steps
         timestep_ = None if timestep is None else timestep * timestep_factor
-        E, E_idx, vector_node_struct, V_structure_new, timestep_rbf = self.features(
+        E, E_idx, timestep_rbf = self.features(
             X[:, :, :4],
             mask,
             residue_idx,
@@ -815,36 +743,20 @@ class ProtFill(nn.Module):
         )
         if timestep is not None:
             E = torch.cat([E, repeat(timestep_rbf, "b d -> b l k d", l=E.shape[1], k=E.shape[2])], dim=-1)
-        struct_features = []
-        if V_structure_new is not None:
-            struct_features.append(V_structure_new)
-        if V_structure is not None:
-            struct_features.append(V_structure)
-        if len(struct_features) > 0:
-            V_structure = torch.cat(struct_features, dim=-1)
 
         h_S = self.W_s(seq)
-        if self.seq_features:
-            h_S = torch.cat([V_sequence, h_S], -1)
-            h_S = self.W_v_seq(h_S)
 
         # Prepare node and edge embeddings
-        h_V, h_E, E_idx, vector_node_struct = self.generate_embeddings(
-            X, seq, mask, E, E_idx, vector_node_struct, V_structure, chain_M
-        )
+        h_V = torch.zeros(
+            (E.shape[0], E.shape[1], self.hidden_dim), device=E.device
+        )  # node embeddings = zeros
 
-        vectors = [X]
-        if vector_node_seq is not None:
-            vectors.append(vector_node_seq)
-        if vector_node_struct is not None:
-            vectors.append(vector_node_struct)
-        vectors = torch.cat(vectors, -2)
+        h_E = self.W_e(E)
 
         return (
             h_V,
             h_E,
             E_idx,
-            vectors,
             h_S,
             X,
             translation_gt,
@@ -1134,11 +1046,9 @@ class ProtFill(nn.Module):
         seq,
         coords,
         chain_M,
-        optional_features,
         mask,
         residue_idx,
         chain_encoding_all,
-        transform,
         timestep,
         test=False,
         corrupt=True,
@@ -1159,7 +1069,6 @@ class ProtFill(nn.Module):
             h_V,
             h_E,
             E_idx,
-            vectors,
             h_S,
             coords,
             translation_gt,
@@ -1170,13 +1079,11 @@ class ProtFill(nn.Module):
         ) = self.extract_features(
             seq.clone(),
             chain_M,
-            optional_features,
             mask,
             residue_idx,
             chain_encoding_all,
             coords,
             cycle,
-            transform=transform,
             timestep=timestep,
             corrupt=corrupt,
         )
@@ -1184,23 +1091,18 @@ class ProtFill(nn.Module):
         coords_t = coords.clone()
         if self.diffusion:
             orientations, orientations_inverse, _ = get_orientations(coords)
-        if (
-            cycle == 0
-            or not self.cycle_over_embedding
-            or not self.only_cycle_over_decoder
-        ):
-            h_V, h_E, vectors, E_idx, coords = self.apply_encoder(
-                h_V,
-                h_E,
-                E_idx,
-                mask,
-                vectors,
-                residue_idx,
-                chain_encoding_all,
-                global_context,
-                coords,
-                cycle,
-            )
+        h_V, h_E, vectors, E_idx, coords = self.apply_encoder(
+            h_V,
+            h_E,
+            E_idx,
+            mask,
+            coords,
+            residue_idx,
+            chain_encoding_all,
+            global_context,
+            coords,
+            cycle,
+        )
         h_V, h_E, vectors, E_idx, coords = self.apply_decoder(
             h_V,
             h_E,
@@ -1341,7 +1243,6 @@ class ProtFill(nn.Module):
         chain_M,
         residue_idx,
         chain_encoding_all,
-        optional_features,
         save_path=None,
         **kwargs,
     ):
@@ -1375,104 +1276,72 @@ class ProtFill(nn.Module):
                 save_path,
                 0,
             )
-        if isinstance(self.diffusion, FlowMatcher):
-            node = self._get_neural_ode(
-                coords,
-                seq,
-                chain_M,
-                optional_features,
-                mask,
-                residue_idx,
-                chain_encoding_all,
-            )
-            t_span = [0.0, 1.0] if save_path is None else np.linspace(0.0, 1.0, 50)
-            coords_ca = node.trajectory(coords_ca, t_span=torch.tensor(t_span).float())
+    
+        for t in list(range(1, self.num_diffusion_steps + 1))[::-1]:
+            timestep = t * torch.ones(X.shape[0], dtype=torch.long)
+            coords_ = coords.clone()
+            for cycle in range(self.n_cycles):
+                coords_predicted, _, angles, logits, *_ = self.run_cycle(
+                    cycle,
+                    seq=seq,
+                    coords=coords_,
+                    chain_M=chain_M,
+                    mask=mask,
+                    residue_idx=residue_idx,
+                    chain_encoding_all=chain_encoding_all,
+                    timestep=timestep,
+                    corrupt=False,
+                    test=True,
+                )
+                if cycle < self.n_cycles - 1:
+                    if logits is not None:
+                        seq = deepcopy(S)
+                        seq[chain_M.bool()] = torch.max(logits[chain_M.bool()], -1)[1]
+                    coords_ = deepcopy(X)
+                    coords_[chain_M.bool()] = coords[chain_M.bool()]
+
+            if self.predict_sequence:
+                seq_new, distribution = self.diffusion.denoise_sequence(
+                    distribution, logits, chain_M, timestep
+                )
+                seq[chain_M_bool] = seq_new[chain_M_bool]
+
+            # translation_gt = repeat(self.diffusion._get_v(x0=X[:, :, 2], noise=translation_gt, timestep=timestep), "b n d -> b n 4 d")
+
+            if self.predict_structure:
+                coords[~chain_M.bool()] = X[~chain_M.bool()]
+                coords_ca_new, orientations_new = self.diffusion.denoise_structure(
+                    coords=coords,
+                    orientations=orientations,
+                    translation_predicted=coords_predicted,
+                    rotation_predicted=angles,
+                    std_coords=std_coords,
+                    predict_angles=True,
+                    timestep=timestep,
+                    chain_M=chain_M,
+                    mask=mask,
+                )
+                coords_ca[chain_M_bool] = coords_ca_new[chain_M_bool]
+                orientations[chain_M_bool] = orientations_new[chain_M_bool]
+                coords_new = self.construct_coords(
+                    coords_ca,
+                    orientations,
+                    chain_encoding_all,
+                    local_coords,
+                    mask,
+                )
+                coords[chain_M_bool] = coords_new[chain_M_bool]
             if save_path is not None:
-                for t, coords_ in enumerate(coords_ca):
-                    coords_ = (
-                        repeat(coords_, "b n d -> b n 4 d") + coords - coords[:, :, [2]]
-                    )
-                    self._save_step(
-                        coords_[0],
-                        seq[0],
-                        chain_M[0],
-                        mask[0],
-                        chain_encoding_all[0],
-                        kwargs["chain_dict"][0],
-                        save_path,
-                        t + 1,
-                    )
-            # coords_ca = coords_ca[0] - translation
-            coords_ca = coords_ca[-1]
-            coords = repeat(coords_ca, "b n d -> b n 4 d") + coords - coords[:, :, [2]]
-        else:
-            for t in list(range(1, self.num_diffusion_steps + 1))[::-1]:
-                timestep = t * torch.ones(X.shape[0], dtype=torch.long)
-                coords_ = coords.clone()
-                for cycle in range(self.n_cycles):
-                    coords_predicted, _, angles, logits, *_ = self.run_cycle(
-                        cycle,
-                        seq=seq,
-                        coords=coords_,
-                        chain_M=chain_M,
-                        optional_features=optional_features,
-                        mask=mask,
-                        residue_idx=residue_idx,
-                        chain_encoding_all=chain_encoding_all,
-                        transform=None,
-                        timestep=timestep,
-                        corrupt=False,
-                        test=True,
-                    )
-                    if cycle < self.n_cycles - 1:
-                        if logits is not None:
-                            seq = deepcopy(S)
-                            seq[chain_M.bool()] = torch.max(logits[chain_M.bool()], -1)[1]
-                        coords_ = deepcopy(X)
-                        coords_[chain_M.bool()] = coords[chain_M.bool()]
-
-                if self.predict_sequence:
-                    seq_new, distribution = self.diffusion.denoise_sequence(
-                        distribution, logits, chain_M, timestep
-                    )
-                    seq[chain_M_bool] = seq_new[chain_M_bool]
-
-                # translation_gt = repeat(self.diffusion._get_v(x0=X[:, :, 2], noise=translation_gt, timestep=timestep), "b n d -> b n 4 d")
-
-                if self.predict_structure:
-                    coords[~chain_M.bool()] = X[~chain_M.bool()]
-                    coords_ca_new, orientations_new = self.diffusion.denoise_structure(
-                        coords=coords,
-                        orientations=orientations,
-                        translation_predicted=coords_predicted,
-                        rotation_predicted=angles,
-                        std_coords=std_coords,
-                        predict_angles=True,
-                        timestep=timestep,
-                        chain_M=chain_M,
-                        mask=mask,
-                    )
-                    coords_ca[chain_M_bool] = coords_ca_new[chain_M_bool]
-                    orientations[chain_M_bool] = orientations_new[chain_M_bool]
-                    coords_new = self.construct_coords(
-                        coords_ca,
-                        orientations,
-                        chain_encoding_all,
-                        local_coords,
-                        mask,
-                    )
-                    coords[chain_M_bool] = coords_new[chain_M_bool]
-                if save_path is not None:
-                    self._save_step(
-                        coords[0],
-                        seq[0],
-                        chain_M[0],
-                        mask[0],
-                        chain_encoding_all[0],
-                        kwargs["chain_dict"][0],
-                        save_path,
-                        self.num_diffusion_steps - t + 1,
-                    )
+                self._save_step(
+                    coords[0],
+                    seq[0],
+                    chain_M[0],
+                    mask[0],
+                    chain_encoding_all[0],
+                    kwargs["chain_dict"][0],
+                    save_path,
+                    self.num_diffusion_steps - t + 1,
+                )
         out = {}
         if self.predict_sequence:
             out["seq"] = torch.log(distribution + 1e-7)
@@ -1592,7 +1461,6 @@ class ProtFill(nn.Module):
         chain_M,
         residue_idx,
         chain_encoding_all,
-        optional_features,
         test=False,
         transform=None,
     ):
@@ -1625,11 +1493,9 @@ class ProtFill(nn.Module):
                 seq,
                 coords,
                 chain_M,
-                optional_features,
                 mask,
                 residue_idx,
                 chain_encoding_all,
-                transform,
                 timestep,
                 test=test,
             )

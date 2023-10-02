@@ -326,19 +326,6 @@ def compute_loss(model_args, args, model, epoch):
 
 
 def get_model_args(batch, device):
-    optional_feature_names = {
-        "scalar_seq": ["chemical", "chem_topological"],
-        "scalar_struct": [
-            "dihedral",
-            "topological",
-            "mask_feature",
-            "secondary_structure",
-        ],
-        "vector_node_seq": ["sidechain_orientation"],
-        "vector_node_struct": ["backbone_orientation", "c_beta"],
-        "vector_edge_seq": [],  # not implemented
-        "vector_edge_struct": [],  # not implemented
-    }
     model_args = {}
     model_args["chain_M"] = batch["masked_res"].to(dtype=torch.float32, device=device)
     model_args["X"] = batch["X"].to(dtype=torch.float32, device=device)
@@ -348,28 +335,6 @@ def get_model_args(batch, device):
         dtype=torch.long, device=device
     )
     model_args["mask"] = batch["mask"].to(dtype=torch.float32, device=device)
-    model_args["optional_features"] = {}
-    for k, v in optional_feature_names.items():
-        if k.startswith("scalar"):
-            model_args["optional_features"][k] = (
-                torch.cat([batch[x] for x in v if x in batch], dim=2).to(
-                    dtype=torch.float32, device=device
-                )
-                if any([x in batch for x in v])
-                else None
-            )
-        elif k.startswith("vector"):
-            model_args["optional_features"][k] = None
-            to_stack = []
-            for x in v:
-                if x in batch:
-                    to_stack.append(batch[x])
-                    if len(to_stack[-1].shape) == 3:
-                        to_stack[-1] = to_stack[-1].unsqueeze(2)
-            if len(to_stack) > 0:
-                model_args["optional_features"][k] = torch.cat(to_stack, dim=2).to(
-                    dtype=torch.float32, device=device
-                )
     return model_args
 
 
