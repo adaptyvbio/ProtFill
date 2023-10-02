@@ -812,10 +812,7 @@ def run(args, trial=None):
             if (e + 1) % args.validate_every_n_epochs == 0:
                 model.eval()
                 with torch.no_grad():
-                    if args.skip_tqdm:
-                        loader = valid_loader
-                    else:
-                        loader = tqdm(valid_loader)
+                    loader = tqdm(valid_loader)
                     for batch in loader:
                         (
                             loss,
@@ -916,8 +913,6 @@ def run(args, trial=None):
                     {
                         "epoch": e + 1,
                         "step": total_step,
-                        "num_edges": args.num_neighbors,
-                        "noise_level": args.backbone_noise,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                     },
@@ -1098,11 +1093,9 @@ def parse(command=None):
     args.patch_around_mask = not args.predict_file
 
     args.use_edge_vectors = True
-    # args.use_node_dropout = True
-    # args.less_dropout = False
     args.no_oxygen_features = True
 
-    args.validate_every_n_epochs = 10
+    args.validate_every_n_epochs = 1
     args.save_model_every_n_epochs = 10
 
     args.hidden_dim = 128

@@ -336,20 +336,15 @@ class ProtFill(nn.Module):
             Diffuser(
                 num_tokens=num_letters,
                 num_steps=args.num_diffusion_steps,
-                schedule_name=args.variance_schedule,
-                seq_diffusion_type=args.seq_diffusion_type,
-                recover_x0=not args.not_recover_x0,
-                linear_interpolation=args.linear_interpolation,
-                diff_predict=args.diffusion_parameterization,
-                weighted_diff_loss=args.weighted_diff_loss,
-                nu_pos=args.pos_cosine_nu,
-                nu_rot=args.rot_cosine_nu,
-                nu_seq=args.seq_cosine_nu,
-                pos_std=args.noise_unknown,
-                noise_around_interpolation=args.noise_around_interpolation,
-                no_added_noise=args.no_added_diff_noise,
-                cosine_cutoff=args.cosine_cutoff,
-                all_x0=args.all_x0,
+                schedule_name="cosine",
+                seq_diffusion_type="mask",
+                recover_x0=True,
+                linear_interpolation=False,
+                diff_predict="x0",
+                weighted_diff_loss=False,
+                pos_std=args.noise_std,
+                noise_around_interpolation=False,
+                no_added_noise=True,
             )
             if args.diffusion
             else None
@@ -609,7 +604,7 @@ class ProtFill(nn.Module):
         if self.predict_structure or self.co_design != "none" or self.noise_structure:
             if self.diffusion:
                 X, rotation, translation, _ = self.diffusion.noise_structure(
-                    X, chain_M, self.predict_angles, timestep
+                    X, chain_M, True, timestep
                 )
             else:
                 chain_M_bool = chain_M.bool()
@@ -1352,26 +1347,21 @@ class ProtFill(nn.Module):
     ):
         seq = deepcopy(S)
         coords = deepcopy(X)
-        if self.predict_sequence or self.co_design != "none":
-            seq, distribution = self.diffusion.noise_sequence(
-                seq,
-                chain_M,
-                self.num_diffusion_steps * torch.ones(X.shape[0], dtype=torch.long),
-                inference=True,
-            )
-        if self.predict_structure or self.co_design != "none":
-            coords, *_, std_coords = self.diffusion.noise_structure(
-                coords,
-                chain_M,
-                self.predict_angles,
-                (self.num_diffusion_steps) * torch.ones(X.shape[0], dtype=torch.long),
-                variance_scale=self.variance_scale,
-                inference=True,
-            )
-        if self.predict_angles:
-            orientations, _, local_coords = get_orientations(coords)
-        else:
-            orientations = None
+        seq, distribution = self.diffusion.noise_sequence(
+            seq,
+            chain_M,
+            self.num_diffusion_steps * torch.ones(X.shape[0], dtype=torch.long),
+            inference=True,
+        )
+        coords, *_, std_coords = self.diffusion.noise_structure(
+            coords,
+            chain_M,
+            True,
+            (self.num_diffusion_steps) * torch.ones(X.shape[0], dtype=torch.long),
+            variance_scale=1.,
+            inference=True,
+        )
+        orientations, _, local_coords = get_orientations(coords)
         coords_ca = coords[:, :, 2, :]
         chain_M_bool = chain_M.bool()
         if save_path is not None:
@@ -1420,7 +1410,7 @@ class ProtFill(nn.Module):
                 timestep = t * torch.ones(X.shape[0], dtype=torch.long)
                 coords_ = coords.clone()
                 for cycle in range(self.n_cycles):
-                    coords_predicted, translation, angles, logits, *_ = self.run_cycle(
+                    coords_predicted, _, angles, logits, *_ = self.run_cycle(
                         cycle,
                         seq=seq,
                         coords=coords_,
@@ -1447,9 +1437,6 @@ class ProtFill(nn.Module):
                     )
                     seq[chain_M_bool] = seq_new[chain_M_bool]
 
-                if self.diff_predict != "noise":
-                    translation = coords_predicted
-
                 # translation_gt = repeat(self.diffusion._get_v(x0=X[:, :, 2], noise=translation_gt, timestep=timestep), "b n d -> b n 4 d")
 
                 if self.predict_structure:
@@ -1457,32 +1444,23 @@ class ProtFill(nn.Module):
                     coords_ca_new, orientations_new = self.diffusion.denoise_structure(
                         coords=coords,
                         orientations=orientations,
-                        translation_predicted=translation,
+                        translation_predicted=coords_predicted,
                         rotation_predicted=angles,
                         std_coords=std_coords,
-                        predict_angles=self.predict_angles,
+                        predict_angles=True,
                         timestep=timestep,
                         chain_M=chain_M,
                         mask=mask,
                     )
-                    if self.reset_masked:
-                        coords_ca_new[~mask.bool()] = 0
                     coords_ca[chain_M_bool] = coords_ca_new[chain_M_bool]
-                    if self.predict_angles:
-                        orientations[chain_M_bool] = orientations_new[chain_M_bool]
-                        coords_new = self.construct_coords(
-                            coords_ca,
-                            orientations,
-                            chain_encoding_all,
-                            local_coords,
-                            mask,
-                        )
-                    else:
-                        coords_new = (
-                            repeat(coords_ca_new, "b l d -> b l n d", n=4)
-                            + coords
-                            - coords[:, :, [2], :]
-                        )
+                    orientations[chain_M_bool] = orientations_new[chain_M_bool]
+                    coords_new = self.construct_coords(
+                        coords_ca,
+                        orientations,
+                        chain_encoding_all,
+                        local_coords,
+                        mask,
+                    )
                     coords[chain_M_bool] = coords_new[chain_M_bool]
                 if save_path is not None:
                     self._save_step(
@@ -1657,8 +1635,6 @@ class ProtFill(nn.Module):
             )
             if seq_t_ is not None:
                 seq_t = seq_t_
-            if translation_gt_ is not None:
-                translation_gt = translation_gt_
             if rotation_gt_ is not None:
                 rotation_gt = rotation_gt_
             if distribution_ is not None:
@@ -1669,26 +1645,10 @@ class ProtFill(nn.Module):
                 out["seq_t"] = distribution
             if self.predict_structure:
                 if self.diffusion:
-                    if self.predict_angles:
-                        out["rotation"] = angles
-                        out["rotation_gt"] = rotation_gt
-                    if self.diff_predict == "noise":
-                        out["CA"] = translation
-                        out["CA_gt"] = translation_gt
-                    elif self.diff_predict == "x0":
-                        out["CA"] = coords[:, :, 2]
-                        out["CA_gt"] = X[:, :, 2]
-                    elif self.diff_predict == "mu_t":
-                        coords_ca_gt = self.diffusion._get_mu_t(
-                            x0=X[:, :, 2], xt=coords_t[:, :, 2], timestep=timestep
-                        )
-                        out["CA"] = coords[:, :, 2]
-                        out["CA_gt"] = coords_ca_gt
-                    elif self.diff_predict == "v":
-                        out["CA"] = coords[:, :, 2]
-                        out["CA_gt"] = self.diffusion._get_v(
-                            x0=X[:, :, 2], noise=translation_gt, timestep=timestep
-                        )
+                    out["rotation"] = angles
+                    out["rotation_gt"] = rotation_gt
+                    out["CA"] = coords[:, :, 2]
+                    out["CA_gt"] = X[:, :, 2]
                 else:
                     out["coords"] = coords.clone()
             output.append(out)
