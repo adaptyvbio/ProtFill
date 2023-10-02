@@ -17,6 +17,95 @@ from protfill.diffusion import Diffuser, get_orientations, FlowMatcher
 from torch.utils.checkpoint import checkpoint
 
 
+class Rotation:
+    @staticmethod
+    def R_x(alpha, vector=False):
+        """
+        Computes a tensor of 3D rotation matrices around the x-axis.
+        """
+        if not vector:
+            ca = torch.cos(alpha)
+            sa = torch.sin(alpha)
+        else:
+            ca = alpha[:, :, 0]
+            sa = alpha[:, :, 1]
+        zeros = torch.zeros_like(ca)
+        ones = torch.ones_like(ca)
+        return torch.stack(
+            (
+                torch.cat((ones, zeros, zeros), dim=1),
+                torch.cat((zeros, ca, -sa), dim=1),
+                torch.cat((zeros, sa, ca), dim=1),
+            ),
+            dim=1,
+        )
+
+    @staticmethod
+    def R_y(beta, vector=False):
+        """
+        Computes a tensor of 3D rotation matrices around the y-axis.
+        """
+        if not vector:
+            cb = torch.cos(beta)
+            sb = torch.sin(beta)
+        else:
+            cb = beta[:, :, 0]
+            sb = beta[:, :, 1]
+        zeros = torch.zeros_like(cb)
+        ones = torch.ones_like(cb)
+        return torch.stack(
+            (
+                torch.cat((cb, zeros, sb), dim=1),
+                torch.cat((zeros, ones, zeros), dim=1),
+                torch.cat((-sb, zeros, cb), dim=1),
+            ),
+            dim=1,
+        )
+
+    @staticmethod
+    def R_z(gamma, vector=False):
+        """
+        Computes a tensor of 3D rotation matrices around the z-axis.
+        """
+        if not vector:
+            cg = torch.cos(gamma)
+            sg = torch.sin(gamma)
+        else:
+            cg = gamma[..., 0]
+            sg = gamma[..., 1]
+        zeros = torch.zeros_like(cg)
+        ones = torch.ones_like(cg)
+        return torch.stack(
+            (
+                torch.cat((cg, -sg, zeros), dim=1),
+                torch.cat((sg, cg, zeros), dim=1),
+                torch.cat((zeros, zeros, ones), dim=1),
+            ),
+            dim=1,
+        )
+
+    @staticmethod
+    def rotation_matrices_from_angles(angles, vector=False, oxy_angle=None):
+        """
+        Computes a tensor of 3D rotation matrices from a tensor of 3D rotation angles.
+        """
+        # Check if the angles are in the correct shape (B * N, 3) or (B * N, 3, 3) for vector angles
+        if (not vector and len(angles.shape) == 3) or (
+            vector and len(angles.shape) == 4
+        ):
+            angles = rearrange(angles, "b n ... -> (b n) ...")
+        # Extract the rotation angles for each matrix
+        alpha, beta, gamma = torch.chunk(angles, 3, dim=1)
+
+        # Compute the rotation matrices
+        R_x = Rotation.R_x(alpha, vector=vector)
+        R_y = Rotation.R_y(beta, vector=vector)
+        R_z = Rotation.R_z(gamma, vector=vector)
+
+        # Return the composed rotation matrices
+        return torch.einsum("nij,njk,nkl->nil", R_z, R_y, R_x), oxy_angle
+
+
 def combine_decoders(coords_decoder, seq_decoder, predict_angles):
     class CombinedDecoder(nn.Module):
         def __init__(self):
@@ -58,10 +147,6 @@ class ProteinFeatures(nn.Module):
         num_positional_embeddings=16,
         num_rbf=16,
         top_k=30,
-        random_frac=0,
-        diffusion=False,
-        force_neighbor_edges=False,
-        no_oxygen=False,
     ):
         """Extract protein features"""
         super(ProteinFeatures, self).__init__()
@@ -69,45 +154,23 @@ class ProteinFeatures(nn.Module):
         self.top_k = top_k
         self.num_rbf = num_rbf
         self.num_positional_embeddings = num_positional_embeddings
-        self.random_frac = random_frac
-        self.no_oxygen = no_oxygen
 
         self.embeddings = PositionalEncodings(num_positional_embeddings)
-        num_dist = 16 if no_oxygen else 25
+        num_dist = 16 
         edge_in = num_positional_embeddings + num_rbf * num_dist
         self.edge_embedding = nn.Linear(edge_in, edge_features, bias=False)
         self.norm_edges = nn.LayerNorm(edge_features)
         self.timestep = None
-        self.force_neighbor_edges = force_neighbor_edges
 
-    def _dist(self, X, mask, eps=1e-6, exclude_neighbors=False):
+    def _dist(self, X, mask, eps=1e-6):
         mask_2D = torch.unsqueeze(mask, 1) * torch.unsqueeze(mask, 2)
         dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)
         D = mask_2D * torch.sqrt(torch.sum(dX**2, 3) + eps)
         D_max, _ = torch.max(D, -1, keepdim=True)
         D_adjust = D + (1.0 - mask_2D) * D_max
-        non_random_k = int((1 - self.random_frac) * self.top_k)
-        random_k = self.top_k - non_random_k
-        if exclude_neighbors:
-            D_adjust[
-                :, range(1, D_adjust.shape[1]), range(D_adjust.shape[1] - 1)
-            ] = 1000
-            D_adjust[
-                :, range(D_adjust.shape[1] - 1), range(1, D_adjust.shape[1])
-            ] = 1000
         D_neighbors, E_idx = torch.topk(
-            D_adjust, int(np.minimum(non_random_k, X.shape[1])), dim=-1, largest=False
+            D_adjust, int(np.minimum(self.top_k, X.shape[1])), dim=-1, largest=False
         )
-        if random_k > 0:
-            D_random = torch.rand_like(D_adjust)
-            D_random = D_random.scatter_(-1, E_idx, -2)
-            D_random[~mask_2D.bool()] = -1
-            D_random[:, range(D_random.shape[1]), range(D_random.shape[1])] = -3
-            D_neighbors_r, E_idx_r = torch.topk(
-                D_random, int(np.minimum(random_k, X.shape[1])), dim=-1
-            )
-            D_neighbors = torch.cat([D_neighbors, D_neighbors_r], -1)
-            E_idx = torch.cat([E_idx, E_idx_r], -1)
         return D_neighbors, E_idx
 
     def _rbf(self, D):
@@ -177,7 +240,6 @@ class ProteinFeatures(nn.Module):
         residue_idx,
         chain_labels,
         timestep=None,
-        feature_types=None,
         linear=False,
     ):
         if timestep is not None:
@@ -189,7 +251,6 @@ class ProteinFeatures(nn.Module):
         C = X[:, :, 1, :]
         N = X[:, :, 0, :]
         Ca = X[:, :, 2, :]
-        O = X[:, :, 3, :]
 
         if linear:
             prev_ind = torch.tensor([0] + list(range(X.shape[1] - 1)), device=X.device)
@@ -207,29 +268,8 @@ class ProteinFeatures(nn.Module):
             D_neighbors = torch.norm(x1 - x2, dim=-1)
         else:
             D_neighbors, E_idx = self._dist(
-                C, mask, exclude_neighbors=self.force_neighbor_edges
+                C, mask
             )
-            if self.force_neighbor_edges:
-                prev_ind = torch.tensor(
-                    [0] + list(range(X.shape[1] - 1)), device=X.device
-                )
-                next_ind = torch.tensor(
-                    list(range(1, X.shape[1])) + [X.shape[1] - 1], device=X.device
-                )
-                E_idx_ = repeat(
-                    torch.stack([prev_ind, next_ind], -1),
-                    "n k -> b n k",
-                    b=X.shape[0],
-                )
-                x1 = rearrange(C, "b n d -> b n 1 d")
-                x2 = gather_nodes(C, E_idx_)
-                D_neighbors_ = torch.norm(x1 - x2, dim=-1)
-                D_neighbors[:, 1:-1, -2:] = D_neighbors_[:, 1:-1, :]
-                E_idx[:, 1:-1, -2:] = E_idx_[:, 1:-1, :]
-                D_neighbors[:, 0, -1] = D_neighbors_[:, 0, 1]
-                E_idx[:, 0, -1] = E_idx_[:, 0, 1]
-                D_neighbors[:, -1, -1] = D_neighbors_[:, -1, 0]
-                E_idx[:, -1, -1] = E_idx_[:, -1, 0]
 
         RBF_all = []
         RBF_all.append(self._rbf(D_neighbors))  # Ca-Ca
@@ -248,17 +288,7 @@ class ProteinFeatures(nn.Module):
         RBF_all.append(self._get_rbf(Ca, N, E_idx))  # C-N
         RBF_all.append(self._get_rbf(Cb, N, E_idx))  # Cb-N
         RBF_all.append(self._get_rbf(Ca, Cb, E_idx))  # C-Cb
-        if not self.no_oxygen:
-            RBF_all.append(self._get_rbf(O, O, E_idx))  # O-O
-            RBF_all.append(self._get_rbf(C, O, E_idx))  # Ca-O
-            RBF_all.append(self._get_rbf(O, C, E_idx))  # O-Ca
-            RBF_all.append(self._get_rbf(N, O, E_idx))  # N-O
-            RBF_all.append(self._get_rbf(O, N, E_idx))  # O-N
-            RBF_all.append(self._get_rbf(Cb, O, E_idx))  # Cb-O
-            RBF_all.append(self._get_rbf(O, Ca, E_idx))  # O-C
-            RBF_all.append(self._get_rbf(O, Cb, E_idx))  # O-Cb
-            RBF_all.append(self._get_rbf(Ca, O, E_idx))  # C-O
-        RBF_all = torch.cat(tuple(RBF_all), dim=-1)  # + 24 or 16
+        RBF_all = torch.cat(tuple(RBF_all), dim=-1)  # + 16
 
         if self.timestep is not None:
             timestep_embedding = self._rbf(
@@ -355,15 +385,9 @@ class ProtFill(nn.Module):
         self.features = ProteinFeatures(
             hidden_dim,
             top_k=k_neighbors,
-            random_frac=0.,
-            diffusion=args.diffusion,
-            force_neighbor_edges=False,
-            no_oxygen=True,
         )
         args.edge_compute_func = self.features
-
         args.vector_dim = 6
-        args.norm_divide = self.predict_sequence
 
         add_dim = 16 if self.diffusion else 0
         self.W_e = nn.Linear(hidden_dim + add_dim, hidden_dim, bias=True)
@@ -414,9 +438,6 @@ class ProtFill(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-        # self.translation_weight = torch.nn.Parameter(torch.tensor(1.))
-        # self.translation_weight.requires_grad = True
-
     def random_rotation(self, X, chain_labels, lim=torch.pi):
         n = chain_labels.sum()
         angles = torch.randn((n, 3)) * lim - lim / 2
@@ -425,138 +446,6 @@ class ProtFill(nn.Module):
         mean = X[chain_labels].mean(-2).unsqueeze(-2)
         out = torch.einsum("ndj,naj->nad", R, X[chain_labels] - mean) + mean
         return out.float()
-
-    @staticmethod
-    def R_x(alpha, vector=False):
-        """
-        Computes a tensor of 3D rotation matrices around the x-axis.
-        """
-        if not vector:
-            ca = torch.cos(alpha)
-            sa = torch.sin(alpha)
-        else:
-            ca = alpha[:, :, 0]
-            sa = alpha[:, :, 1]
-        zeros = torch.zeros_like(ca)
-        ones = torch.ones_like(ca)
-        return torch.stack(
-            (
-                torch.cat((ones, zeros, zeros), dim=1),
-                torch.cat((zeros, ca, -sa), dim=1),
-                torch.cat((zeros, sa, ca), dim=1),
-            ),
-            dim=1,
-        )
-
-    @staticmethod
-    def R_y(beta, vector=False):
-        """
-        Computes a tensor of 3D rotation matrices around the y-axis.
-        """
-        if not vector:
-            cb = torch.cos(beta)
-            sb = torch.sin(beta)
-        else:
-            cb = beta[:, :, 0]
-            sb = beta[:, :, 1]
-        zeros = torch.zeros_like(cb)
-        ones = torch.ones_like(cb)
-        return torch.stack(
-            (
-                torch.cat((cb, zeros, sb), dim=1),
-                torch.cat((zeros, ones, zeros), dim=1),
-                torch.cat((-sb, zeros, cb), dim=1),
-            ),
-            dim=1,
-        )
-
-    @staticmethod
-    def R_z(gamma, vector=False):
-        """
-        Computes a tensor of 3D rotation matrices around the z-axis.
-        """
-        if not vector:
-            cg = torch.cos(gamma)
-            sg = torch.sin(gamma)
-        else:
-            cg = gamma[..., 0]
-            sg = gamma[..., 1]
-        zeros = torch.zeros_like(cg)
-        ones = torch.ones_like(cg)
-        return torch.stack(
-            (
-                torch.cat((cg, -sg, zeros), dim=1),
-                torch.cat((sg, cg, zeros), dim=1),
-                torch.cat((zeros, zeros, ones), dim=1),
-            ),
-            dim=1,
-        )
-
-    @staticmethod
-    def rotation_matrices_from_angles(angles, vector=False, oxy_angle=None):
-        """
-        Computes a tensor of 3D rotation matrices from a tensor of 3D rotation angles.
-        """
-        # Check if the angles are in the correct shape (B * N, 3) or (B * N, 3, 3) for vector angles
-        if (not vector and len(angles.shape) == 3) or (
-            vector and len(angles.shape) == 4
-        ):
-            angles = rearrange(angles, "b n ... -> (b n) ...")
-        # Extract the rotation angles for each matrix
-        alpha, beta, gamma = torch.chunk(angles, 3, dim=1)
-
-        # Compute the rotation matrices
-        R_x = ProtFill.R_x(alpha, vector=vector)
-        R_y = ProtFill.R_y(beta, vector=vector)
-        R_z = ProtFill.R_z(gamma, vector=vector)
-
-        # Return the composed rotation matrices
-        return torch.einsum("nij,njk,nkl->nil", R_z, R_y, R_x), oxy_angle
-
-    @staticmethod
-    def rotation_matrices_from_quaternions(quaternions):
-        """
-        Computes a tensor of 3D rotation matrices from a tensor of 4D quaternions.
-        """
-        oxy_angle = None
-        # Extract the quaternion components
-        x, y, z = torch.chunk(quaternions, 3, dim=1)
-        norm = 1 / torch.sqrt(x**2 + y**2 + z**2 + 1)
-        w, x, y, z = torch.ones_like(x) / norm, x / norm, y / norm, z / norm
-
-        # Compute the rotation matrices
-        R = torch.stack(
-            (
-                torch.cat(
-                    (
-                        w**2 + x**2 - y**2 - z**2,
-                        2 * (x * y - w * z),
-                        2 * (x * z + w * y),
-                    ),
-                    dim=1,
-                ),
-                torch.cat(
-                    (
-                        2 * (x * y + w * z),
-                        w**2 - x**2 + y**2 - z**2,
-                        2 * (y * z - w * x),
-                    ),
-                    dim=1,
-                ),
-                torch.cat(
-                    (
-                        2 * (x * z - w * y),
-                        2 * (y * z + w * x),
-                        w**2 - x**2 - y**2 + z**2,
-                    ),
-                    dim=1,
-                ),
-            ),
-            dim=1,
-        )
-
-        # Return the rotation matrices
-        return R, oxy_angle
 
     def noise_coords(
         self,
@@ -738,7 +627,6 @@ class ProtFill(nn.Module):
             mask,
             residue_idx,
             chain_encoding_all,
-            feature_types=[],
             timestep=timestep_,
         )
         if timestep is not None:
@@ -1331,20 +1219,6 @@ class ProtFill(nn.Module):
             if self.predict_angles:
                 for param in self.angle_layer.parameters():
                     param.requires_grad = True
-            
-            # for param in self.encoders.parameters():
-            #     param.requires_grad = False
-            # for param in self.W_out.parameters():
-            #     param.requires_grad = False
-            # for param in self.W_s.parameters():
-            #     param.requires_grad = False
-            # for param in self.W_e.parameters():
-            #     param.requires_grad = False
-            # for param in self.features.parameters():
-            #     param.requires_grad = False
-            # for dec in self.decoders[::2]:
-            #     for param in dec.parameters():
-            #         param.requires_grad = False
 
     def forward(
         self,
@@ -1355,7 +1229,6 @@ class ProtFill(nn.Module):
         residue_idx,
         chain_encoding_all,
         test=False,
-        transform=None,
     ):
         """Graph-conditioned sequence model"""
 
