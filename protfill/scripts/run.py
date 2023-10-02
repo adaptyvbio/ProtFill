@@ -559,7 +559,7 @@ def run(args, trial=None):
         encoder_type=args.message_passing,
         decoder_type=args.message_passing,
         k_neighbors=args.num_neighbors,
-        noise_unknown=args.noise_std,
+        noise_std=args.noise_std,
         n_cycles=args.n_cycles,
         hidden_dim=args.hidden_dim,
         embedding_dim=args.hidden_dim,
@@ -889,34 +889,6 @@ def run(args, trial=None):
             with open(logfile, "a") as f:
                 f.write(epoch_string)
             print(epoch_string)
-            if args.log_wandb_name is not None:
-                res = {
-                    "epoch": e + 1,
-                    "train_loss": train_loss,
-                }
-                if (e + 1) % args.validate_every_n_epochs == 0:
-                    res["valid_loss"] = validation_loss
-                if train_rmsd > 0:
-                    res["train_rmsd"] = train_rmsd
-                if train_rmsd_full > 0:
-                    res["train_rmsd_bb"] = train_rmsd_full
-                if valid_rmsd > 0:
-                    res["valid_rmsd"] = valid_rmsd
-                if valid_rmsd_full > 0:
-                    res["valid_rmsd_bb"] = valid_rmsd_full
-                if train_accuracy > 0:
-                    res["train_pp"] = train_pp
-                    res["train_acc"] = train_accuracy
-                if validation_accuracy > 0:
-                    res["valid_pp"] = valid_pp
-                    res["valid_acc"] = validation_accuracy
-                for k, v in train_losses.items():
-                    if v > 0:
-                        res[f"train_{k}_loss"] = v
-                for k, v in valid_losses.items():
-                    if v > 0:
-                        res[f"valid_{k}_loss"] = v
-                wandb.log(res)
 
             checkpoint_filename_last = (
                 base_folder + "model_weights/epoch_last.pt".format(e + 1, total_step)
@@ -925,8 +897,6 @@ def run(args, trial=None):
                 {
                     "epoch": e + 1,
                     "step": total_step,
-                    "num_edges": args.num_neighbors,
-                    "noise_level": args.backbone_noise,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                 },
@@ -934,13 +904,9 @@ def run(args, trial=None):
             )
 
             best_epoch = False
-            if not args.predict_structure or args.co_design != "none":
-                if validation_accuracy > best_res:
-                    best_epoch = True
-                    best_res = validation_accuracy
-            elif valid_rmsd < best_res:
+            if validation_accuracy > best_res:
                 best_epoch = True
-                best_res = valid_rmsd
+                best_res = validation_accuracy
             if best_epoch:
                 checkpoint_filename_best = (
                     base_folder

@@ -315,28 +315,12 @@ class ProtFill(nn.Module):
         encoder_type,
         decoder_type,
         hidden_dim=128,
-        vocab=21,
-        k_neighbors=32,
-        augment_eps=0.,
-        noise_unknown=None,
-        noise_unknown_internal=None,
         embedding_dim=128,
-        ignore_unknown=False,
-        node_features_type="zeros",
+        num_letters=21,
+        k_neighbors=32,
+        noise_std=None,
         n_cycles: int = 1,
-        no_sequence_in_encoder: bool = False,
-        double_sequence_features: bool = False,
-        seq_init_mode: str = "zeros",
-        cycle_over_embedding: bool = False,
-        predict_structure: bool = True,
-        use_global_feats_attention_dim: bool = False,
         separate_modules_num: int = 1,
-        predict_node_vectors: str = "no_prediction",  # ["only_vectors", "with_others", "no_prediction"]
-        only_cycle_over_decoder: bool = False,
-        random_connections_frac: float = 0,
-        skip_weight_init: bool = False,
-        predict_angles: bool = True,
-        co_design: str = "share_enc",
     ):
         super(ProtFill, self).__init__()
         encoders = {
@@ -347,14 +331,6 @@ class ProtFill(nn.Module):
             "gvp": GVP_Decoder,
             "gvp_orig": GVPOrig_Decoder,
         }
-        auto_decoders = ["mpnn_auto"]
-        force_update_decoders = ["mpnn", "mpnn_enc"]
-        vector_update_decoders = ["gvp", "gvp_orig"]
-        self.vector_encoders = ["gvp", "gvp_orig"]
-        self.vector_decoders = ["gvp", "gvp_orig"]
-        # self.vector_encoders = []
-        # self.vector_decoders = []
-        num_letters = 20 if ignore_unknown else 21
 
         self.diffusion = (
             Diffuser(
@@ -388,68 +364,18 @@ class ProtFill(nn.Module):
         )
         self.num_diffusion_steps = args.num_diffusion_steps
         self.num_letters = num_letters
-        self.predict_structure = predict_structure
-        self.predict_sequence = not predict_structure
-        self.predict_node_vectors = predict_node_vectors != "no_prediction"
-        if predict_node_vectors == "only_vectors":
-            self.predict_structure = False
-            self.predict_sequence = False
-        if co_design != "none":
-            self.predict_structure = True
-            self.predict_sequence = True
+        self.predict_structure = True
+        self.predict_sequence = True
 
-        if self.predict_structure and decoder_type in auto_decoders:
-            raise NotImplementedError(
-                "Predicting structure with AR decoders is not implemented!"
-            )
-        if self.predict_structure and decoder_type in force_update_decoders:
-            raise NotImplementedError(
-                f"Predicting structure with {decoder_type} decoder is not implemented!"
-            )
-
-        if co_design == "seq":
-            n_cycles *= 2
-            separate_modules_num *= 2
-
-        if noise_unknown is None:
-            noise_unknown = 5 if self.predict_structure else augment_eps
-        if noise_unknown_internal is None:
-            noise_unknown_internal = 0.5 if self.predict_structure else 0
-        if node_features_type is None:
-            node_features_type = ""
+        if noise_std is None:
+            noise_std = 5 if self.predict_structure else 0.
         self.num_letters = num_letters
-        self.node_features_type = node_features_type
-        self.augment_eps = augment_eps
-        self.noise_unknown = noise_unknown
-        self.noise_unknown_internal = noise_unknown_internal
+        self.noise_unknown = noise_std
         self.n_cycles = n_cycles
-        self.no_sequence_in_encoder = no_sequence_in_encoder
-        self.seq_init_mode = seq_init_mode
-        self.cycle_over_embedding = cycle_over_embedding
-        self.use_global_feats_attention_dim = use_global_feats_attention_dim
         self.hidden_dim = hidden_dim
         self.encoder_type = encoder_type
         self.decoder_type = decoder_type
-        self.only_cycle_over_decoder = only_cycle_over_decoder
-        self.predict_angles = predict_angles
-        self.co_design = co_design
         self.old_noise = args.alternative_noising
-
-        self.one_shot_decoder = decoder_type not in auto_decoders
-        self.use_sequence_in_encoder = (
-            self.one_shot_decoder if not no_sequence_in_encoder else False
-        )
-        self.add_sequence_in_decoder = (
-            not self.use_sequence_in_encoder or double_sequence_features
-        )
-        self.probability_mode = self.seq_init_mode in [
-            "esm_probabilities",
-            "uniform_probabilities",
-        ]
-        self.force_update = (
-            decoder_type in force_update_decoders
-        ) and predict_structure
-        self.vector_update = decoder_type in vector_update_decoders
 
         if separate_modules_num > n_cycles:
             separate_modules_num = n_cycles
@@ -460,148 +386,54 @@ class ProtFill(nn.Module):
         self.features = ProteinFeatures(
             hidden_dim,
             top_k=k_neighbors,
-            random_frac=random_connections_frac,
+            random_frac=0.,
             diffusion=args.diffusion,
             force_neighbor_edges=False,
             no_oxygen=True,
         )
         args.edge_compute_func = self.features
 
-        n_vectors = {"sidechain_orientation": 1, "backbone_orientation": 2, "c_beta": 1}
         args.vector_dim = 6
-        if (
-            self.encoder_type in self.vector_encoders
-            or self.decoder_type in self.vector_decoders
-        ):
-            args.vector_dim += sum(
-                [n_vectors[x] for x in node_features_type.split("+") if x in n_vectors]
-            )
         args.norm_divide = self.predict_sequence
 
         add_dim = 16 if self.diffusion else 0
         self.W_e = nn.Linear(hidden_dim + add_dim, hidden_dim, bias=True)
         self.W_s = (
-            nn.Sequential(
-                nn.Linear(vocab, embedding_dim),
-                nn.LayerNorm(embedding_dim),
-            )
-            if self.probability_mode
-            else nn.Embedding(vocab, embedding_dim)
+            nn.Embedding(num_letters, embedding_dim)
         )
-        if node_features_type is not None:
-            d_structure = {
-                "dihedral": 4,
-                "topological": 9,
-                "mask": 1,
-                "esm": 320,
-                "secondary_structure": 3,
-            }
-            d_sequence = {"chemical": 6, "chem_topological": 105}
-            input_f_structure = sum(
-                [
-                    d_structure[x]
-                    for x in node_features_type.split("+")
-                    if x in d_structure
-                ]
-            )
-            input_f_seq = sum(
-                [
-                    d_sequence[x]
-                    for x in node_features_type.split("+")
-                    if x in d_sequence
-                ]
-            )
-            if input_f_structure > 0:
-                self.str_features = True
-            if self.use_sequence_in_encoder:
-                if input_f_seq > 0:
-                    input_f_structure += hidden_dim
-                else:
-                    input_f_structure += embedding_dim
-            if input_f_structure > 0:
-                self.W_v_str = nn.Linear(input_f_structure, hidden_dim, bias=True)
-            if input_f_seq > 0:
-                self.seq_features = True
-                self.W_v_seq = nn.Linear(
-                    input_f_seq + embedding_dim, hidden_dim, bias=True
-                )
-        if "esm" in self.node_features_type.split("+") or "esm" in self.seq_init_mode:
-            self.esm, self.alphabet = esm.pretrained.esm2_t30_150M_UR50D()
-            self.batch_converter = self.alphabet.get_batch_converter()
-            self.W_v_esm = nn.Linear(320, hidden_dim)
-            tok_to_idx = self.alphabet.tok_to_idx
-            idx_to_tok = {tok_to_idx[k]: k for k in tok_to_idx.keys()}
-            for k in idx_to_tok.keys():
-                if len(idx_to_tok[k]) > 1:
-                    idx_to_tok[k] = "X"
-            self.idx_esm_to_idx_mpnn = {
-                k: REVERSE_ALPHABET_DICT[idx_to_tok[k]]
-                if idx_to_tok[k] in REVERSE_ALPHABET_DICT.keys()
-                else 0
-                for k in idx_to_tok.keys()
-            }
-            idx_mpnn_to_idx_esm = {
-                self.idx_esm_to_idx_mpnn[k]: k
-                for k in self.idx_esm_to_idx_mpnn.keys()
-                if self.idx_esm_to_idx_mpnn[k] != 0
-            }
-            self.idx_selector = torch.LongTensor(
-                [
-                    idx_mpnn_to_idx_esm[k]
-                    for k in sorted(list(idx_mpnn_to_idx_esm.keys()))
-                ]
-            )
-            self.idx_for_unknown = torch.LongTensor(
-                [
-                    k
-                    for k in range(len(list(self.idx_esm_to_idx_mpnn.keys())))
-                    if k not in self.idx_selector
-                ]
-            )
 
         self.separate_modules_num = separate_modules_num
         self.encoders = nn.ModuleList([encoders[encoder_type](args)])
         if separate_modules_num > 1:
-            if co_design == "share_enc" and self.only_separate_dec:
-                pass
-            elif not self.only_cycle_over_decoder or not self.cycle_over_embedding:
-                self.encoders += nn.ModuleList(
-                    [
-                        encoders[encoder_type](args)
-                        for i in range(separate_modules_num - 1)
-                    ]
-                )
+            self.encoders += nn.ModuleList(
+                [
+                    encoders[encoder_type](args)
+                    for i in range(separate_modules_num - 1)
+                ]
+            )
 
         # Decoder layers
         in_dim = hidden_dim  # edge features
-        if self.add_sequence_in_decoder or not self.one_shot_decoder:
-            if not self.seq_features:
-                in_dim += embedding_dim
-            else:
-                in_dim += hidden_dim
+        if not self.seq_features:
+            in_dim += embedding_dim
+        else:
+            in_dim += hidden_dim
         args.in_dim = in_dim
 
         self.decoders = [
             decoders[decoder_type](args)
-            for i in range(
-                separate_modules_num
-                if co_design != "share_enc"
-                else separate_modules_num * 2
+            for _ in range(
+                separate_modules_num * 2
             )
         ]
-        if self.co_design == "share_enc":
-            self.decoders = [combine_decoders(
-                coords_decoder=self.decoders[c * 2 + 1],  # coords
-                seq_decoder=self.decoders[c * 2],  # seq
-                predict_angles=self.predict_angles,
-            ) for c in range(separate_modules_num)]
+        self.decoders = [combine_decoders(
+            coords_decoder=self.decoders[c * 2 + 1],  # coords
+            seq_decoder=self.decoders[c * 2],  # seq
+            predict_angles=True,
+        ) for c in range(separate_modules_num)]
         self.decoders = nn.ModuleList(self.decoders)
         if self.predict_sequence:
             self.W_out = nn.Linear(hidden_dim, num_letters, bias=True)
-
-        if self.force_update:
-            force_dim = hidden_dim * 2
-            self.W_force = nn.Linear(force_dim, 1)
 
         self.W_vector = nn.Linear(args.vector_dim, 4)
 
@@ -785,7 +617,7 @@ class ProtFill(nn.Module):
                     X, *_ = self.diffusion_.noise_structure(
                         X,
                         chain_M,
-                        self.predict_angles,
+                        True,
                         (self.num_diffusion_steps)
                         * torch.ones(X.shape[0], dtype=torch.long),
                         inference=True,
@@ -913,41 +745,13 @@ class ProtFill(nn.Module):
 
         distribution = None
         if self.predict_sequence or self.co_design != "none" or self.mask_sequence:
-            if self.one_shot_decoder:
-                if V_sequence is not None:
-                    V_sequence[chain_M.bool()] = 0
+            if V_sequence is not None:
+                V_sequence[chain_M.bool()] = 0
             if self.diffusion:
                 seq, distribution = self.diffusion.noise_sequence(
                     seq, chain_M, timestep
                 )
-            elif self.seq_init_mode == "zeros":
-                seq[chain_M.bool()] = 0
-            elif self.seq_init_mode == "random":
-                seq[chain_M.bool()] = torch.randint_like(
-                    seq[chain_M.bool()], low=1, high=21
-                )
-            elif self.seq_init_mode == "esm_one_hot":
-                seq[chain_M.bool()] = self.esm_one_hot(
-                    seq, (1 - chain_M) * mask, residue_idx
-                )[chain_M.bool()]
-            elif self.seq_init_mode == "esm_probabilities":
-                esm_probabilities = self.esm_probabilities(
-                    seq, (1 - chain_M) * mask, residue_idx
-                )
-                seq = F.one_hot(seq, num_classes=len(ALPHABET)).float()
-                seq[chain_M.bool()] = esm_probabilities[chain_M.bool()]
-            elif self.seq_init_mode == "uniform_probabilities":
-                seq = F.one_hot(seq, num_classes=len(ALPHABET)).float()
-                seq[chain_M.bool()] = 1 / 21
-            else:
-                raise RuntimeError(
-                    f"The {self.seq_init_mode} sequence init mode is unrecognized"
-                )
-
-        if self.one_shot_decoder and vector_node_seq is not None:
-            vector_node_seq[chain_M.bool()] = self.random_unit_vectors_like(
-                vector_node_seq[chain_M.bool()]
-            )
+            seq[chain_M.bool()] = 0
 
         return seq, distribution, V_sequence, vector_node_seq
 
@@ -1011,10 +815,10 @@ class ProtFill(nn.Module):
             mask,
             residue_idx,
             chain_encoding_all,
-            feature_types=self.node_features_type.split("+"),
+            feature_types=[],
             timestep=timestep_,
         )
-        if timestep is not None and not self.use_graph_context:
+        if timestep is not None:
             E = torch.cat([E, repeat(timestep_rbf, "b d -> b l k d", l=E.shape[1], k=E.shape[2])], dim=-1)
         struct_features = []
         if V_structure_new is not None:
@@ -1024,49 +828,10 @@ class ProtFill(nn.Module):
         if len(struct_features) > 0:
             V_structure = torch.cat(struct_features, dim=-1)
 
-        if (
-            self.encoder_type not in self.vector_encoders
-            and self.decoder_type not in self.vector_decoders
-        ):
-            seq_features = []
-            if vector_node_seq is not None:
-                seq_features.append(rearrange(vector_node_seq, "b n f d -> b n (f d)"))
-                vector_node_seq = None
-            if V_sequence is not None:
-                seq_features.append(V_sequence)
-            if len(seq_features) > 0:
-                V_sequence = torch.cat(seq_features, dim=-1)
-            else:
-                V_sequence = None
-            struct_features = []
-            if vector_node_struct is not None:
-                struct_features.append(
-                    rearrange(vector_node_struct, "b n f d -> b n (f d)")
-                )
-                vector_node_struct = None
-            if V_structure is not None:
-                struct_features.append(V_structure)
-            if len(struct_features) > 0:
-                V_structure = torch.cat(struct_features, dim=-1)
-            else:
-                V_structure = None
         h_S = self.W_s(seq)
         if self.seq_features:
             h_S = torch.cat([V_sequence, h_S], -1)
             h_S = self.W_v_seq(h_S)
-        if "esm" in self.node_features_type:
-            if V_structure is not None:
-                V_structure = torch.cat(
-                    [V_structure, self.run_esm(seq, mask, residue_idx)], -1
-                )
-            else:
-                V_structure = self.run_esm(seq, mask, residue_idx)
-
-        if self.use_sequence_in_encoder:
-            if self.str_features:
-                V_structure = torch.cat([V_structure, h_S], -1)
-            else:
-                V_structure = h_S
 
         # Prepare node and edge embeddings
         h_V, h_E, E_idx, vector_node_struct = self.generate_embeddings(
@@ -1347,43 +1112,25 @@ class ProtFill(nn.Module):
         cycle,
     ):
         decoder_module = self.decoders[min(cycle, len(self.decoders) - 1)]
-        if self.one_shot_decoder:
-            if self.add_sequence_in_decoder:
-                h_E = cat_neighbors_nodes(h_S, h_E, E_idx)
-            args = (
-                h_V,
-                h_E,
-                E_idx,
-                mask,
-                vectors,
-                residue_idx,
-                chain_encoding_all,
-                global_context,
-                coords,
-            )
-            (
-                h_V,
-                h_E,
-                vectors,
-                E_idx,
-                coords,
-            ) = decoder_module(*args)
-        else:
-            h_V, h_E, vectors, E_idx = decoder_module(
-                h_V,
-                h_E,
-                h_S,
-                E_idx,
-                mask,
-                vectors,
-                chain_M,
-                test=test,
-                out=self.W_out,
-                out_seq=self.W_s,
-                num_letters=self.num_letters,
-                temperature=self.temperature,
-                seq=seq.clone(),
-            )
+        h_E = cat_neighbors_nodes(h_S, h_E, E_idx)
+        args = (
+            h_V,
+            h_E,
+            E_idx,
+            mask,
+            vectors,
+            residue_idx,
+            chain_encoding_all,
+            global_context,
+            coords,
+        )
+        (
+            h_V,
+            h_E,
+            vectors,
+            E_idx,
+            coords,
+        ) = decoder_module(*args)
         return h_V, h_E, vectors, E_idx, coords
 
     def run_cycle(
@@ -1411,42 +1158,34 @@ class ProtFill(nn.Module):
             rotation_gt,
             distribution_t,
         ) = [None] * 8
-        if self.co_design == "seq":
-            if cycle % 2 == 0:
-                self.predict_structure = True
-                self.predict_sequence = False
-            else:
-                self.predict_structure = False
-                self.predict_sequence = True
         seq = seq.detach()
         coords = coords.detach()
-        if not self.cycle_over_embedding or cycle == 0:
-            (
-                h_V,
-                h_E,
-                E_idx,
-                vectors,
-                h_S,
-                coords,
-                translation_gt,
-                rotation_gt,
-                seq_t,
-                distribution_t,
-                global_context,
-            ) = self.extract_features(
-                seq.clone(),
-                chain_M,
-                optional_features,
-                mask,
-                residue_idx,
-                chain_encoding_all,
-                coords,
-                cycle,
-                transform=transform,
-                timestep=timestep,
-                corrupt=corrupt,
-            )
-            global_context = None
+        (
+            h_V,
+            h_E,
+            E_idx,
+            vectors,
+            h_S,
+            coords,
+            translation_gt,
+            rotation_gt,
+            seq_t,
+            distribution_t,
+            global_context,
+        ) = self.extract_features(
+            seq.clone(),
+            chain_M,
+            optional_features,
+            mask,
+            residue_idx,
+            chain_encoding_all,
+            coords,
+            cycle,
+            transform=transform,
+            timestep=timestep,
+            corrupt=corrupt,
+        )
+        global_context = None
         coords_t = coords.clone()
         if self.diffusion:
             orientations, orientations_inverse, _ = get_orientations(coords)
@@ -1799,17 +1538,12 @@ class ProtFill(nn.Module):
             angles = rearrange(angles, "b n ... -> (b n) ...")
 
         chain_M_bool = chain_M.bool()
-        if self.vector_update:
-            coords[chain_M_bool] = (
-                coords[chain_M_bool] + vectors[:, :, [0], :][chain_M_bool]
-            )
-            translation = vectors[:, :, 0, :]
-        else:
-            coords_orig = coords.clone()
-            coords[chain_M_bool] = vectors[:, :, :4, :][chain_M_bool]
-            translation = coords[:, :, 2, :] - coords_orig[:, :, 2, :]
+        coords[chain_M_bool] = (
+            coords[chain_M_bool] + vectors[:, :, [0], :][chain_M_bool]
+        )
+        translation = vectors[:, :, 0, :]
 
-        if self.predict_angles and not self.diffusion:
+        if not self.diffusion:
             coords = self.rotate(
                 coords,
                 angles,
