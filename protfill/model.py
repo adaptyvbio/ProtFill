@@ -488,81 +488,6 @@ class ProtFill(nn.Module):
 
         return X, rotation, translation
 
-    def find_chains_idx(self, residue_idx):
-        diffs = residue_idx[:, 1:] - residue_idx[:, :-1]
-        idxs = torch.nonzero(diffs > 1)
-        idxs = [
-            np.array(
-                [w.item() for w in idxs[idxs[:, 0] == k][:, 1]]
-                + [len(diffs[k][diffs[k] > 0])]
-            )
-            for k in range(residue_idx.shape[0])
-        ]
-        return idxs
-
-    def prepare_seqs_for_esm(self, seqs, idxs):
-        seqs = [
-            "".join([ALPHABET_DICT[int(s)] for s in seq]) for k, seq in enumerate(seqs)
-        ]
-        max_len = len(seqs[0])
-        for k in range(len(seqs)):
-            for idx in idxs[k][-2::-1]:
-                seqs[k] = seqs[k][: idx + 1] + "<eos><cls>" + seqs[k][idx + 1 :]
-            seqs[k] = seqs[k][: len(seqs[k]) - max_len + idxs[k][-1] + 1] + "<pad>" * (
-                max_len - idxs[k][-1] - 1
-            )
-            seqs[k] = (str(k), seqs[k].replace("X", "<mask>"))
-        return seqs
-
-    def retrieve_outputs_from_esm(self, outputs, idxs):
-        idxs = [
-            [0]
-            + [idx + 2 * (k + 1) for k, idx in enumerate(idxs[l][:-1])]
-            + [1 + idx + 2 * (k + 1) for k, idx in enumerate(idxs[l][:-1])]
-            + [outputs.shape[1] - 1]
-            for l in range(len(idxs))
-        ]
-        idxs = [F.one_hot(torch.LongTensor(idx)).sum(dim=0) for idx in idxs]
-        out = [outputs[k, ~idxs[k].bool()] for k in range(len(idxs))]
-        min_len = np.min([len(o) for o in out])
-        out = torch.stack([out[k][:min_len] for k in range(len(out))])
-        return out
-
-    def run_esm(self, S, mask, residue_idx, return_logits=False):
-        device = S.device
-        self.esm.eval()
-        masked_seq = S.detach().clone()
-        masked_seq[mask == 0] = 0
-        idxs = self.find_chains_idx(residue_idx)
-        seqs = self.prepare_seqs_for_esm(masked_seq, idxs)
-        _, _, batch_tokens = self.batch_converter(seqs)
-        batch_tokens = batch_tokens.to(device)
-        with torch.no_grad():
-            results = self.esm(batch_tokens, repr_layers=[6], return_contacts=False)
-
-        if return_logits:
-            return self.retrieve_outputs_from_esm(results["logits"], idxs)
-        else:
-            return self.retrieve_outputs_from_esm(results["representations"][6], idxs)
-
-    def esm_probabilities(self, S, mask, residue_idx):
-        logits = self.run_esm(S, mask, residue_idx, return_logits=True)
-        logits_mpnn = logits[:, :, self.idx_selector]
-        logits_unknown = torch.sum(
-            logits[:, :, self.idx_for_unknown], dim=-1, keepdim=True
-        )
-        logits_mpnn = torch.cat([logits_unknown, logits_mpnn], dim=-1)
-        return F.softmax(logits_mpnn, dim=-1)
-
-    def esm_one_hot(self, S, mask, residue_idx):
-        return self.esm_probabilities(S, mask, residue_idx).argmax(dim=-1)
-
-    def random_unit_vectors_like(self, tensor):
-        # rand_vecs = torch.randn_like(tensor)
-        # norms = torch.norm(rand_vecs, dim=-1, keepdim=True)
-        # return rand_vecs / norms
-        return torch.zeros_like(tensor)
-
     def initialize_sequence(
         self,
         seq,
@@ -647,11 +572,7 @@ class ProtFill(nn.Module):
             E_idx,
             h_S,
             X,
-            translation_gt,
             rotation_gt,
-            seq_t,
-            distribution,
-            timestep_rbf
         )
 
     def update_coords(self, coords, h_V, h_E, E_idx):
@@ -943,14 +864,10 @@ class ProtFill(nn.Module):
     ):
         (
             global_context,
-            translation,
             angles,
             logits,
-            seq_t,
-            translation_gt,
             rotation_gt,
-            distribution_t,
-        ) = [None] * 8
+        ) = [None] * 4
         seq = seq.detach()
         coords = coords.detach()
         (
@@ -959,11 +876,7 @@ class ProtFill(nn.Module):
             E_idx,
             h_S,
             coords,
-            translation_gt,
             rotation_gt,
-            seq_t,
-            distribution_t,
-            global_context,
         ) = self.extract_features(
             seq.clone(),
             chain_M,
@@ -976,7 +889,6 @@ class ProtFill(nn.Module):
             corrupt=corrupt,
         )
         global_context = None
-        coords_t = coords.clone()
         if self.diffusion:
             orientations, orientations_inverse, _ = get_orientations(coords)
         h_V, h_E, vectors, E_idx, coords = self.apply_encoder(
@@ -1142,27 +1054,6 @@ class ProtFill(nn.Module):
             out["coords"] = coords
         return [out]
 
-    def _save_step(
-        self,
-        coords,
-        seq,
-        chain_M,
-        mask,
-        chain_encoding_all,
-        chain_dict,
-        save_path,
-        t,
-    ):
-        predicted_protein_entry = ProteinEntry.from_arrays(
-            seq,
-            coords,
-            mask,
-            chain_dict,
-            chain_encoding_all,
-            mask * chain_M,
-        )
-        predicted_protein_entry.to_pickle(os.path.join(save_path, f"step_{t}.pickle"))
-
     def process_structure(
         self, coords, angles, vectors, chain_encoding_all, mask, chain_M
     ):
@@ -1184,41 +1075,6 @@ class ProtFill(nn.Module):
                 vector=False,
             )
         return coords, angles
-
-    def load_state_dict(self, state_dict):
-        strict = False
-        if self.co_design == "seq" and len(self.state_dict()) != len(state_dict):
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                name_split = k.split(".")
-                if name_split[0] in ["encoders", "decoders"]:
-                    name_split[1] = str(int(name_split[1]) * 2)
-                    new_state_dict[".".join(name_split)] = v
-                else:
-                    new_state_dict[k] = v
-            state_dict = new_state_dict
-            strict = False
-        if self.co_design == "share_enc" and len(self.state_dict()) != len(state_dict):
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                name_split = k.split(".")
-                if name_split[0] == "decoders":
-                    name_split = name_split[: 2] + ["seq_decoder"] + name_split[2:]
-                    new_state_dict[".".join(name_split)] = v
-                else:
-                    new_state_dict[k] = v
-            state_dict = new_state_dict
-            strict = False
-        super().load_state_dict(state_dict, strict=strict)
-        if self.co_design =="share_enc" and len(self.state_dict()) != len(state_dict): # freeze the encoder and the seq decoder
-            for param in self.parameters():
-                param.requires_grad = False
-            for dec in self.decoders:
-                for param in dec.coords_decoder.parameters():
-                    param.requires_grad = True
-            if self.predict_angles:
-                for param in self.angle_layer.parameters():
-                    param.requires_grad = True
 
     def forward(
         self,
