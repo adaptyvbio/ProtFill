@@ -10,7 +10,7 @@ import random
 from proteinflow import ProteinLoader, ProteinDataset
 from proteinflow.data import ProteinEntry
 from protfill.model import (
-    ProteinModel,
+    ProtFill,
 )
 from tqdm import tqdm
 import optuna
@@ -234,10 +234,10 @@ def initialize_sequence(seq, chain_M, seq_init_mode):
 
 
 def compute_loss(model_args, args, model, epoch):
-    output, mask_for_loss, S, X = get_prediction(model, model_args, args, barycenter=args.barycenter)
+    output, mask_for_loss, S, X = get_prediction(model, model_args, args, barycenter=True)
 
     losses = defaultdict(lambda: torch.tensor(0.0).to(args.device))
-    v_w = 0.0 if epoch < args.violation_loss_epoch else args.violation_loss_weight
+    v_w = 0.0 if epoch < args.violation_loss_start_epoch else args.violation_loss_weight
     for out in output:
         if "seq" in out:
             if model.diffusion and model.training:
@@ -253,17 +253,17 @@ def compute_loss(model_args, args, model, epoch):
                     S,
                     out["seq"],
                     mask_for_loss,
-                    no_smoothing=args.no_smoothing,
-                    ignore_unknown=args.ignore_unknown_residues,
+                    no_smoothing=False,
+                    ignore_unknown=False,
                 )
         if "coords" in out and not model.diffusion:
             loss_upd = get_coords_loss(
                 out["coords"],
                 X,
                 mask_for_loss,
-                loss_type=args.struct_loss_type,
-                predict_all_atoms=args.predict_angles,
-                skip_oxygens=not args.predict_oxygens,
+                loss_type="mse",
+                predict_all_atoms=True,
+                skip_oxygens=True,
             )
             for k, v in loss_upd.items():
                 losses[k] += v
@@ -291,9 +291,9 @@ def compute_loss(model_args, args, model, epoch):
         mask_for_loss,
         X,
         coords_predict,
-        ignore_unknown=args.ignore_unknown_residues,
-        predict_all_atoms=args.predict_angles,
-        predict_oxygens=args.predict_oxygens,
+        ignore_unknown=False,
+        predict_all_atoms=True,
+        predict_oxygens=False,
     )
     full_rmsd = 0
     if isinstance(rmsd, list):
@@ -380,45 +380,29 @@ def get_prediction(model, model_args, args, chain_dict=None, barycenter=False):
     mask_for_loss = mask * chain_M
     S = model_args["S"]
     X = deepcopy(model_args["X"])
-    if args.ignore_unknown_residues:
-        mask_for_loss *= S != 0
 
-    if args.test_invariance:
-        test_invariance(model, model_args, args)
-        raise RuntimeError("Test over")
-
-    # if args.diffusion:
-    if barycenter:
-        mu = []
-        for i in range(model_args["X"].shape[0]):
-            anchor_ind = ProteinDataset.get_anchor_ind(model_args["chain_M"][i], model_args["mask"][i])
-            mu.append(model_args["X"][i][[int(x) for x in anchor_ind], 2].mean(dim=0))
-        mu = repeat(torch.stack(mu, dim=0), "b d -> b 1 1 d")
-    else:
-        mask_ = model_args["chain_M"] * model_args["mask"]
-        mask_ = rearrange(mask_, "b l -> b l 1")
-        mu = torch.sum(model_args["X"][:, :, 2] * mask_, dim=1) / torch.sum(mask_, dim=1)
-        mu = repeat(mu, "b d -> b 1 1 d")
+    mu = []
+    for i in range(model_args["X"].shape[0]):
+        anchor_ind = ProteinDataset.get_anchor_ind(model_args["chain_M"][i], model_args["mask"][i])
+        mu.append(model_args["X"][i][[int(x) for x in anchor_ind], 2].mean(dim=0))
+    mu = repeat(torch.stack(mu, dim=0), "b d -> b 1 1 d")
     model_args["X"] = model_args["X"] - mu
     model_args["X"][~model_args["mask"].bool()] = 0.0
 
     if args.diffusion and not model.training:
-        if args.skip_diffuse:
-            output = model(**model_args, test=args.test)
+        if args.predict_file:
+            entry_name = os.path.basename(args.predict_file).split(".")[0]
+            save_path = os.path.join("output", entry_name)
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
         else:
-            if args.predict_file:
-                entry_name = os.path.basename(args.predict_file).split(".")[0]
-                save_path = os.path.join("output", entry_name)
-                if not os.path.exists(save_path):
-                    os.makedirs(save_path)
-            else:
-                save_path = None
-            output = model.diffuse(
-                **deepcopy(model_args),
-                test=True,
-                save_path=save_path,
-                chain_dict=chain_dict,
-            )
+            save_path = None
+        output = model.diffuse(
+            **deepcopy(model_args),
+            test=True,
+            save_path=save_path,
+            chain_dict=chain_dict,
+        )
     else:
         output = model(**model_args, test=args.test)
 
@@ -471,13 +455,6 @@ def get_loss(batch, optimizer, args, model, epoch):
 
 
 def run(args, trial=None):
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-        np.random.seed(args.seed)
-        random.seed(args.seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
         
     scaler = torch.cuda.amp.GradScaler()
 
@@ -513,70 +490,26 @@ def run(args, trial=None):
         "max_length": args.max_protein_length,
         "rewrite": True,
         "debug": args.debug,
-        "load_to_ram": args.load_to_ram,
-        "interpolate": args.interpolate,
-        "node_features_type": args.node_features,
 
         "min_cdr_length": 3,
         "lower_limit": args.lower_masked_limit,
         "upper_limit": args.upper_masked_limit,
-        "mask_whole_chains": args.mask_whole_chains,
-        "mask_frac": args.masking_probability,
         "mask_all_cdrs": args.mask_all_cdrs,
         "patch_around_mask": args.patch_around_mask,
         "initial_patch_size": args.initial_patch_size,
-        "mask_sequential": args.mask_sequential,
     }
 
     if not os.path.exists(os.path.join(args.dataset_path, "splits_dict")):
         args.skip_clustering = True
 
-    training_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "train.pickle")
-    )
-    validation_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
-    )
-    test_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "test.pickle")
-    )
-    excluded_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "excluded.pickle")
-    )
+    training_dict = os.path.join(args.dataset_path, "splits_dict", "train.pickle")
+    validation_dict = os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
+    test_dict = os.path.join(args.dataset_path, "splits_dict", "test.pickle")
+    excluded_dict = os.path.join(args.dataset_path, "splits_dict", "excluded.pickle")
 
     print("\nDATA LOADING")
-    if args.tiny_dataset:
-        use_frac = 0.02
-    elif args.small_dataset:
-        use_frac = 0.1
-    elif args.half_dataset:
-        use_frac = 0.5
-    else:
-        use_frac = 1.0
-    if args.debug_file:
-        train_set = ProteinDataset(
-            dataset_folder=os.path.join(args.dataset_path, "train"),
-            debug_file_path=args.debug_file,
-            force_binding_sites_frac=args.train_force_binding_sites_frac,
-            **DATA_PARAM,
-        )
-        train_loader = ProteinLoader(train_set, **LOAD_PARAM)
-        valid_set = ProteinDataset(
-            dataset_folder=os.path.join(args.dataset_path, "valid"),
-            debug_file_path=args.debug_file,
-            force_binding_sites_frac=args.val_force_binding_sites_frac,
-            **DATA_PARAM,
-        )
-        valid_loader = ProteinLoader(valid_set, **LOAD_PARAM)
-    elif args.test:
+    use_frac = 1.
+    if args.test:
         if args.test_excluded:
             folder, clustering_dict_path = "excluded", excluded_dict
         elif args.validate:
@@ -606,7 +539,7 @@ def run(args, trial=None):
             dataset_folder=os.path.join(args.dataset_path, "train"),
             clustering_dict_path=training_dict,
             use_fraction=use_frac,
-            shuffle_clusters=not args.not_shuffle_clusters,
+            shuffle_clusters=True,
             force_binding_sites_frac=args.train_force_binding_sites_frac,
             **DATA_PARAM,
         )
@@ -621,38 +554,21 @@ def run(args, trial=None):
         )
         valid_loader = ProteinLoader(valid_set, **LOAD_PARAM)
 
-    model = ProteinModel(
+    model = ProtFill(
         args,
-        encoder_type=args.encoder_type,
-        decoder_type=args.decoder_type,
+        encoder_type=args.message_passing,
+        decoder_type=args.message_passing,
         k_neighbors=args.num_neighbors,
-        augment_eps=args.backbone_noise,
-        embedding_dim=args.embedding_dim,
-        ignore_unknown=args.ignore_unknown_residues,
-        node_features_type=args.node_features,
-        predict_structure=args.predict_structure,
-        noise_unknown=args.noise_unknown,
+        noise_unknown=args.noise_std,
         n_cycles=args.n_cycles,
-        no_sequence_in_encoder=args.no_sequence_in_encoder,
-        cycle_over_embedding=args.cycle_over_embedding,
-        seq_init_mode=args.seq_init_mode,
-        double_sequence_features=args.double_sequence_features,
         hidden_dim=args.hidden_dim,
-        separate_modules_num=args.separate_modules_num,
-        only_cycle_over_decoder=args.only_cycle_over_decoder,
-        random_connections_frac=args.random_connections_frac,
-        skip_weight_init=args.skip_weight_init,
-        predict_angles=args.predict_angles,
-        co_design=args.co_design,
+        embedding_dim=args.hidden_dim,
     )
     # torch.set_float32_matmul_precision('high')
     # model = torch.compile(model)
     if torch.cuda.device_count() > 1:
         print("Let's use", torch.cuda.device_count(), "GPUs!")
         model = nn.DataParallel(model)
-    if args.log_wandb_name is not None:
-        wandb.init(project="ML4", config=args, name=args.log_wandb_name, entity="adaptyvbio")
-        wandb.watch(model)
     model.to(args.device)
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
@@ -667,19 +583,7 @@ def run(args, trial=None):
         total_step = 0
         epoch = 0
 
-    if args.freeze_structure and args.co_design == "seq":
-        for name, param in model.named_parameters():
-            name_split = name.split(".")
-            if (
-                name_split[0] in ["encoders", "decoders"]
-                and int(name_split[1]) % 2 == 1
-            ):
-                continue
-            if "W_out" in name:
-                continue
-            param.requires_grad = False
-
-    optimizer = get_std_opt(filter(lambda p: p.requires_grad, model.parameters()), args.hidden_dim, total_step, lr=args.lr)
+    optimizer = get_std_opt(filter(lambda p: p.requires_grad, model.parameters()), args.hidden_dim, total_step, lr=None)
 
     if PATH:
         try:
@@ -844,8 +748,7 @@ def run(args, trial=None):
         print(epoch_string)
 
     else:
-        if not args.test_invariance:
-            print("\nTRAINING")
+        print("\nTRAINING")
 
         best_res = 0
         for e in range(args.num_epochs):
@@ -858,10 +761,7 @@ def run(args, trial=None):
             train_rmsd = 0.0
             train_rmsd_full = 0.0
             train_pp = 0.0
-            if args.skip_tqdm or args.test_invariance:
-                loader = train_loader
-            else:
-                loader = tqdm(train_loader)
+            loader = tqdm(train_loader)
             for batch in loader:
                 try:
                     (
@@ -1217,6 +1117,11 @@ def parse(command=None):
         "--alternative_noising",
         action="store_true",
         help="Add noise to coordinates instead of replacing them",
+    )
+
+    argparser.add_argument(
+        "--debug",
+        action="store_true",
     )
 
     args = argparser.parse_args()

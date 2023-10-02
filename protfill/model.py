@@ -17,15 +17,13 @@ from protfill.diffusion import Diffuser, get_orientations, FlowMatcher
 from torch.utils.checkpoint import checkpoint
 
 
-def combine_decoders(coords_decoder, seq_decoder, predict_angles, only_use_linear_for_str=False):
+def combine_decoders(coords_decoder, seq_decoder, predict_angles):
     class CombinedDecoder(nn.Module):
         def __init__(self):
             super(CombinedDecoder, self).__init__()
             self.seq_decoder = seq_decoder
             self.coords_decoder = coords_decoder
             self.predict_angles = predict_angles
-            if only_use_linear_for_str:
-                self.seq_decoder.no_linear = True
 
         def forward(self, *args):
             h_V, *_ = self.seq_decoder(*args)
@@ -310,7 +308,7 @@ class ProteinFeatures(nn.Module):
         return E, E_idx, vectors, scalars, timestep_embedding
 
 
-class ProteinModel(nn.Module):
+class ProtFill(nn.Module):
     def __init__(
         self,
         args,
@@ -319,7 +317,7 @@ class ProteinModel(nn.Module):
         hidden_dim=128,
         vocab=21,
         k_neighbors=32,
-        augment_eps=0.2,
+        augment_eps=0.,
         noise_unknown=None,
         noise_unknown_internal=None,
         embedding_dim=128,
@@ -330,17 +328,17 @@ class ProteinModel(nn.Module):
         double_sequence_features: bool = False,
         seq_init_mode: str = "zeros",
         cycle_over_embedding: bool = False,
-        predict_structure: bool = False,
+        predict_structure: bool = True,
         use_global_feats_attention_dim: bool = False,
         separate_modules_num: int = 1,
         predict_node_vectors: str = "no_prediction",  # ["only_vectors", "with_others", "no_prediction"]
         only_cycle_over_decoder: bool = False,
         random_connections_frac: float = 0,
         skip_weight_init: bool = False,
-        predict_angles: bool = False,
-        co_design: str = "none",
+        predict_angles: bool = True,
+        co_design: str = "share_enc",
     ):
-        super(ProteinModel, self).__init__()
+        super(ProtFill, self).__init__()
         encoders = {
             "gvp": GVP_Encoder,
             "gvp_orig": GVPOrig_Encoder,
@@ -357,10 +355,9 @@ class ProteinModel(nn.Module):
         # self.vector_encoders = []
         # self.vector_decoders = []
         num_letters = 20 if ignore_unknown else 21
-        diffuser = FlowMatcher if args.flow_matching else Diffuser
 
         self.diffusion = (
-            diffuser(
+            Diffuser(
                 num_tokens=num_letters,
                 num_steps=args.num_diffusion_steps,
                 schedule_name=args.variance_schedule,
@@ -384,10 +381,10 @@ class ProteinModel(nn.Module):
         self.diffusion_ = Diffuser(
             num_tokens=num_letters,
             num_steps=args.num_diffusion_steps,
-            schedule_name=args.variance_schedule,
-            seq_diffusion_type=args.seq_diffusion_type,
-            linear_interpolation=args.linear_interpolation,
-            pos_std=args.noise_unknown,
+            schedule_name="cosine",
+            seq_diffusion_type="mask",
+            linear_interpolation=False,
+            pos_std=args.noise_std,
         )
         self.num_diffusion_steps = args.num_diffusion_steps
         self.num_letters = num_letters
@@ -421,8 +418,6 @@ class ProteinModel(nn.Module):
         if node_features_type is None:
             node_features_type = ""
         self.num_letters = num_letters
-        self.add_mask_feature = args.add_mask_feature
-        self.add_anchor_feature = args.add_anchor_feature
         self.node_features_type = node_features_type
         self.augment_eps = augment_eps
         self.noise_unknown = noise_unknown
@@ -436,25 +431,9 @@ class ProteinModel(nn.Module):
         self.encoder_type = encoder_type
         self.decoder_type = decoder_type
         self.only_cycle_over_decoder = only_cycle_over_decoder
-        self.use_checkpointing = args.use_checkpointing
         self.predict_angles = predict_angles
-        self.detach = args.detach_between_cycles
-        self.temperature = args.temperature
         self.co_design = co_design
-        self.mask_sequence = args.mask_sequence
-        self.pass_features = not args.not_pass_features
-        self.quaternion = args.quaternion
-        self.scale_timestep = args.scale_timestep
-        self.reset_masked = args.reset_masked
-        self.diff_predict = args.diffusion_parameterization
-        self.variance_scale = args.variance_scale
-        self.only_separate_seq = args.only_separate_seq
-        self.only_separate_dec = args.only_separate_dec
-        self.only_use_linear_for_str = args.only_use_linear_for_str
-        self.use_graph_context = args.use_graph_context
-        self.old_noise = args.old_noise
-        self.noise_structure = args.noise_structure
-        self.no_oxygen = args.no_oxygen
+        self.old_noise = args.alternative_noising
 
         self.one_shot_decoder = decoder_type not in auto_decoders
         self.use_sequence_in_encoder = (
@@ -483,8 +462,8 @@ class ProteinModel(nn.Module):
             top_k=k_neighbors,
             random_frac=random_connections_frac,
             diffusion=args.diffusion,
-            force_neighbor_edges=args.force_neighbor_edges,
-            no_oxygen=args.no_oxygen,
+            force_neighbor_edges=False,
+            no_oxygen=True,
         )
         args.edge_compute_func = self.features
 
@@ -499,13 +478,7 @@ class ProteinModel(nn.Module):
             )
         args.norm_divide = self.predict_sequence
 
-        if self.add_mask_feature:
-            add_dim = 2
-        else:
-            add_dim = 0
-        if self.diffusion and not self.use_graph_context:
-            add_dim += 16
-
+        add_dim = 16 if self.diffusion else 0
         self.W_e = nn.Linear(hidden_dim + add_dim, hidden_dim, bias=True)
         self.W_s = (
             nn.Sequential(
@@ -545,8 +518,6 @@ class ProteinModel(nn.Module):
                     input_f_structure += hidden_dim
                 else:
                     input_f_structure += embedding_dim
-            if self.add_anchor_feature:
-                input_f_structure += 1
             if input_f_structure > 0:
                 self.W_v_str = nn.Linear(input_f_structure, hidden_dim, bias=True)
             if input_f_seq > 0:
@@ -618,27 +589,15 @@ class ProteinModel(nn.Module):
                 else separate_modules_num * 2
             )
         ]
-        if self.only_separate_seq and separate_modules_num > 1 and co_design == "share_enc":
-            self.decoders[3::2] = [nn.Identity() for _ in range(separate_modules_num - 1)]
         if self.co_design == "share_enc":
             self.decoders = [combine_decoders(
-                coords_decoder=self.decoders[c * 2 + 1] if not self.only_separate_seq else self.decoders[1],  # coords
+                coords_decoder=self.decoders[c * 2 + 1],  # coords
                 seq_decoder=self.decoders[c * 2],  # seq
                 predict_angles=self.predict_angles,
-                only_use_linear_for_str=self.only_use_linear_for_str,
             ) for c in range(separate_modules_num)]
         self.decoders = nn.ModuleList(self.decoders)
         if self.predict_sequence:
             self.W_out = nn.Linear(hidden_dim, num_letters, bias=True)
-        if (
-            cycle_over_embedding
-            and n_cycles > 1
-            and self.add_sequence_in_decoder
-            and not self.only_sidechains_pred
-        ):
-            self.W_e_cycle = nn.Linear(in_dim, hidden_dim, bias=True)
-        else:
-            self.W_e_cycle = None
 
         if self.force_update:
             force_dim = hidden_dim * 2
@@ -646,20 +605,13 @@ class ProteinModel(nn.Module):
 
         self.W_vector = nn.Linear(args.vector_dim, 4)
 
-        self.vector_angles = False
-        self.angle_layer = None
-        if predict_angles:
-            if decoder_type == "gvp" and args.vector_angles:
-                self.vector_angles = True
-            else:
-                self.angle_layer = nn.Sequential(
-                    nn.Linear(self.hidden_dim, 3 if not args.predict_oxygens else 4),
-                )
+        self.angle_layer = nn.Sequential(
+            nn.Linear(self.hidden_dim, 3),
+        )
 
-        if not skip_weight_init:
-            for p in self.parameters():
-                if p.dim() > 1:
-                    nn.init.xavier_uniform_(p)
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
         # self.translation_weight = torch.nn.Parameter(torch.tensor(1.))
         # self.translation_weight.requires_grad = True
@@ -753,9 +705,9 @@ class ProteinModel(nn.Module):
         alpha, beta, gamma = torch.chunk(angles, 3, dim=1)
 
         # Compute the rotation matrices
-        R_x = ProteinModel.R_x(alpha, vector=vector)
-        R_y = ProteinModel.R_y(beta, vector=vector)
-        R_z = ProteinModel.R_z(gamma, vector=vector)
+        R_x = ProtFill.R_x(alpha, vector=vector)
+        R_y = ProtFill.R_y(beta, vector=vector)
+        R_z = ProtFill.R_z(gamma, vector=vector)
 
         # Return the composed rotation matrices
         return torch.einsum("nij,njk,nkl->nil", R_z, R_y, R_x), oxy_angle
@@ -837,7 +789,7 @@ class ProteinModel(nn.Module):
                         (self.num_diffusion_steps)
                         * torch.ones(X.shape[0], dtype=torch.long),
                         inference=True,
-                        variance_scale=self.variance_scale,
+                        variance_scale=1.,
                     )
                 else:
                     coords_X = X[:, :, :4]
@@ -854,36 +806,17 @@ class ProteinModel(nn.Module):
                     vector_node_struct[chain_M_bool] = self.random_unit_vectors_like(
                         vector_node_struct[chain_M_bool]
                     )
-            if not self.no_oxygen:
-                X[:, :, :4] = self.rotate_oxygens(X[:, :, :4], chain_encoding, mask)
         if transform is not None:
             X[:, :, :4] = transform(X[:, :, :4])
 
         return X, V_structure, vector_node_struct, rotation, translation
 
     def generate_embeddings(self, X, S, mask, E, E_idx, vector_node_struct, V_struct, chain_M):
-        if self.add_anchor_feature:
-            anchor = torch.zeros((E.shape[0], E.shape[1]), device=E.device)
-            for i in range(X.shape[0]):
-                masked_ind = torch.where(chain_M[i].bool())[0]
-                known_ind = torch.where(mask[i].bool())[0]
-                start, end = masked_ind[0], masked_ind[-1]
-                start = known_ind[known_ind < start][-1]
-                end = known_ind[known_ind > end][0]
-                middle = (start + end) // 2
-                anchor[i, start: middle] = torch.arange(middle - start, dtype=torch.float)
-                anchor[i, middle: end] = torch.arange(end - middle, 0, -1, dtype=torch.float)
-                anchor = anchor / 25
         if not self.str_features:
-            if self.add_anchor_feature:
-                h_V = repeat(anchor, "... -> ... k", k=self.hidden_dim)
-            else:
-                h_V = torch.zeros(
-                    (E.shape[0], E.shape[1], self.hidden_dim), device=E.device
-                )  # node embeddings = zeros
+            h_V = torch.zeros(
+                (E.shape[0], E.shape[1], self.hidden_dim), device=E.device
+            )  # node embeddings = zeros
         else:
-            if self.add_anchor_feature:
-                V_struct = torch.cat([V_struct, anchor.unsqueeze(-1)], dim=-1)
             h_V = self.W_v_str(V_struct)
 
         h_E = self.W_e(E)
@@ -1071,10 +1004,7 @@ class ProteinModel(nn.Module):
                 transform=transform,
                 timestep=timestep,
             )
-        max_timestep = (
-            1 if isinstance(self.diffusion, FlowMatcher) else self.num_diffusion_steps
-        )
-        timestep_factor = 1 if not self.scale_timestep else 25 / max_timestep
+        timestep_factor = 25 / self.num_diffusion_steps
         timestep_ = None if timestep is None else timestep * timestep_factor
         E, E_idx, vector_node_struct, V_structure_new, timestep_rbf = self.features(
             X[:, :, :4],
@@ -1137,11 +1067,6 @@ class ProteinModel(nn.Module):
                 V_structure = torch.cat([V_structure, h_S], -1)
             else:
                 V_structure = h_S
-
-        if self.add_mask_feature:
-            mask_i = repeat(chain_M, "b l -> b l k 1", k=E.shape[2])
-            mask_j = gather_nodes(rearrange(chain_M, "b l -> b l 1"), E_idx)
-            E = torch.cat([E, mask_i, mask_j], -1)
 
         # Prepare node and edge embeddings
         h_V, h_E, E_idx, vector_node_struct = self.generate_embeddings(
@@ -1389,33 +1314,19 @@ class ProteinModel(nn.Module):
         coords,
         cycle,
     ):
-        if self.use_checkpointing:
-            h_V, h_E, vectors, E_idx, coords = checkpoint(
-                self.encoders[min(cycle, len(self.encoders) - 1)],
-                h_V,
-                h_E,
-                E_idx,
-                mask,
-                vectors,
-                residue_idx,
-                chain_encoding_all,
-                global_context,
-                coords,
-            )
-        else:
-            h_V, h_E, vectors, E_idx, coords = self.encoders[
-                min(cycle, len(self.encoders) - 1)
-            ](
-                h_V,
-                h_E,
-                E_idx,
-                mask,
-                vectors,
-                residue_idx,
-                chain_encoding_all,
-                global_context,
-                coords,
-            )
+        h_V, h_E, vectors, E_idx, coords = self.encoders[
+            min(cycle, len(self.encoders) - 1)
+        ](
+            h_V,
+            h_E,
+            E_idx,
+            mask,
+            vectors,
+            residue_idx,
+            chain_encoding_all,
+            global_context,
+            coords,
+        )
         return h_V, h_E, vectors, E_idx, coords
 
     def apply_decoder(
@@ -1450,22 +1361,13 @@ class ProteinModel(nn.Module):
                 global_context,
                 coords,
             )
-            if self.use_checkpointing:
-                (
-                    h_V,
-                    h_E,
-                    vectors,
-                    E_idx,
-                    coords,
-                ) = checkpoint(decoder_module, *args)
-            else:
-                (
-                    h_V,
-                    h_E,
-                    vectors,
-                    E_idx,
-                    coords,
-                ) = decoder_module(*args)
+            (
+                h_V,
+                h_E,
+                vectors,
+                E_idx,
+                coords,
+            ) = decoder_module(*args)
         else:
             h_V, h_E, vectors, E_idx = decoder_module(
                 h_V,
@@ -1516,9 +1418,8 @@ class ProteinModel(nn.Module):
             else:
                 self.predict_structure = False
                 self.predict_sequence = True
-        if self.detach:
-            seq = seq.detach()
-            coords = coords.detach()
+        seq = seq.detach()
+        coords = coords.detach()
         if not self.cycle_over_embedding or cycle == 0:
             (
                 h_V,
@@ -1545,10 +1446,9 @@ class ProteinModel(nn.Module):
                 timestep=timestep,
                 corrupt=corrupt,
             )
-            if not self.use_graph_context:
-                global_context = None
+            global_context = None
         coords_t = coords.clone()
-        if self.predict_angles and not self.vector_angles and self.diffusion:
+        if self.diffusion:
             orientations, orientations_inverse, _ = get_orientations(coords)
         if (
             cycle == 0
@@ -1567,19 +1467,6 @@ class ProteinModel(nn.Module):
                 coords,
                 cycle,
             )
-            if not self.pass_features:
-                h_V, h_E, *_ = self.extract_features(
-                    seq.clone(),
-                    chain_M,
-                    optional_features,
-                    mask,
-                    residue_idx,
-                    chain_encoding_all,
-                    vectors,
-                    cycle,
-                    transform=transform,
-                    corrupt=corrupt,
-                )
         h_V, h_E, vectors, E_idx, coords = self.apply_decoder(
             h_V,
             h_E,
@@ -1601,8 +1488,6 @@ class ProteinModel(nn.Module):
         else:
             angles = h_V
         if self.predict_sequence:
-            if self.W_e_cycle is not None:
-                h_E = self.W_e_cycle(h_E)
             logits, seq = self.process_sequence(
                 h_V,
                 seq,
@@ -1613,7 +1498,7 @@ class ProteinModel(nn.Module):
             coords, angles, translation = self.process_structure(
                 coords, angles, vectors, chain_encoding_all, mask, chain_M, cycle
             )
-            if self.predict_angles and not self.vector_angles and self.diffusion:
+            if self.diffusion:
                 angles = self.diffusion.get_global_rotation(
                     angles, orientations, orientations_inverse, return_so3=True
                 )
@@ -1901,19 +1786,6 @@ class ProteinModel(nn.Module):
 
     def process_sequence(self, h_V, seq, chain_M, cycle):
         logits = self.W_out(h_V)
-        if self.W_e_cycle is None:
-            seq = seq.clone()
-            if self.probability_mode:
-                if cycle == 0:
-                    seq = F.one_hot(seq, num_classes=len(ALPHABET)).half()
-                if self.num_letters == 21:
-                    seq[chain_M.bool()] = logits[chain_M.bool()]
-                else:
-                    seq[chain_M.bool(), 1:] = logits[chain_M.bool()]
-            else:
-                seq[chain_M.bool()] = torch.max(logits.detach(), -1)[1][chain_M.bool()]
-                if self.num_letters == 20:
-                    seq[chain_M.bool()] += 1
         return logits, seq
 
     def process_structure(
@@ -1943,8 +1815,8 @@ class ProteinModel(nn.Module):
                 angles,
                 chain_encoding_all,
                 mask,
-                quaternion=self.quaternion,
-                vector=self.vector_angles,
+                quaternion=False,
+                vector=False,
             )
         return coords, angles, translation
 

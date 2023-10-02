@@ -759,9 +759,9 @@ class GVPNet(nn.Module):
 class GVP_Encoder(Encoder):
     def __init__(self, args) -> None:
         super().__init__()
-        self.return_X = args.decoder_type not in ["gvp", "gvp_orig"]
-        self.use_edge_vectors = args.use_edge_vectors
-        self.pass_edge_vectors = args.pass_edge_vectors
+        self.return_X = False
+        self.use_edge_vectors = True
+        self.pass_edge_vectors = True
         if self.return_X:
             vector_dim = 1
         else:
@@ -782,14 +782,14 @@ class GVP_Encoder(Encoder):
             if args.num_encoder_mpnn_layers is not None
             else 1,
             drop_rate=args.dropout,
-            norm_divide=args.norm_coors,
-            update_edges=args.update_edges,
-            use_pna=args.use_pna_in_encoder,
-            use_attention=args.use_attention_in_encoder,
-            use_edge_vectors=args.use_edge_vectors,
-            graph_context_dim=16 if args.use_graph_context else 0,
-            use_node_dropout=args.use_node_dropout,
-            less_dropout=args.less_dropout,
+            norm_divide=False,
+            update_edges=True,
+            use_pna=False,
+            use_attention=False,
+            use_edge_vectors=True,
+            graph_context_dim=0,
+            use_node_dropout=True,
+            less_dropout=False,
         )
 
     def forward(
@@ -838,14 +838,14 @@ class GVP_Encoder(Encoder):
 class GVP_Decoder(Decoder):
     def __init__(self, args) -> None:
         super().__init__()
-        self.use_edge_vectors = args.use_edge_vectors
-        self.pass_edge_vectors = args.pass_edge_vectors
+        self.use_edge_vectors = True
+        self.pass_edge_vectors = True
         node_dims = [
             (args.hidden_dim, args.vector_dim) for _ in range(args.num_decoder_layers - 1)
         ] + [(args.hidden_dim, 1)]
         node_dims = [(args.hidden_dim, args.vector_dim)] + node_dims
 
-        self.accept_X = args.encoder_type not in ["gvp", "gvp_orig"]
+        self.accept_X = False
 
         self.decoder = GVPNet(
             node_dims=node_dims,
@@ -854,21 +854,21 @@ class GVP_Decoder(Decoder):
             n_aggr_layers=args.num_decoder_layers,
             n_mpnn_layers=args.num_decoder_mpnn_layers,
             drop_rate=args.dropout,
-            norm_divide=args.norm_coors,
-            update_edges=args.update_edges,
-            use_pna=args.use_pna_in_decoder,
-            use_attention=args.use_attention_in_decoder,
-            return_edge_features=args.keep_edge_model,
-            vector_angles=args.vector_angles,
+            norm_divide=False,
+            update_edges=True,
+            use_pna=False,
+            use_attention=False,
+            return_edge_features=False,
+            vector_angles=False,
             linear_layers_num=args.linear_layers_num,
             edge_compute_func=args.edge_compute_func
             if args.linear_layers_num > 0
             else None,
-            use_edge_vectors=args.use_edge_vectors,
-            predict_oxygens=args.predict_oxygens,
-            graph_context_dim=16 if args.use_graph_context else 0,
-            use_node_dropout=args.use_node_dropout,
-            less_dropout=args.less_dropout,
+            use_edge_vectors=True,
+            predict_oxygens=False,
+            graph_context_dim=0,
+            use_node_dropout=True,
+            less_dropout=False,
         )
 
     def forward(
