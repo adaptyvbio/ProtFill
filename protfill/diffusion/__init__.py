@@ -1092,7 +1092,7 @@ class Diffuser:
         ) / mask.sum(1)
         return loss.sum()
 
-    def get_sequence_loss(self, seq_0, seq_t, logits_predicted, mask, timestep):
+    def get_sequence_loss(self, seq_0, logits_predicted, mask, timestep):
         """
         Get the loss for the sequence
 

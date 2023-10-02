@@ -243,7 +243,6 @@ def compute_loss(model_args, args, model, epoch):
             if model.diffusion and model.training:
                 losses["seq"] += model.diffusion.get_sequence_loss(
                     seq_0=S,
-                    seq_t=out["seq_t"],
                     logits_predicted=out["seq"],
                     mask=mask_for_loss,
                     timestep=out["timestep"],

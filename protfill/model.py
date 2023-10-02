@@ -1124,15 +1124,10 @@ class ProtFill(nn.Module):
         else:
             angles = h_V
         if self.predict_sequence:
-            logits, seq = self.process_sequence(
-                h_V,
-                seq,
-                chain_M,
-                cycle,
-            )
+            logits = self.W_out(h_V)
         if self.predict_structure:
-            coords, angles, translation = self.process_structure(
-                coords, angles, vectors, chain_encoding_all, mask, chain_M, cycle
+            coords, angles = self.process_structure(
+                coords, angles, vectors, chain_encoding_all, mask, chain_M
             )
             if self.diffusion:
                 angles = self.diffusion.get_global_rotation(
@@ -1140,100 +1135,10 @@ class ProtFill(nn.Module):
                 )
         return (
             coords,
-            translation,
             angles,
             logits,
-            seq_t,
-            translation_gt,
             rotation_gt,
-            distribution_t,
-            coords_t,
         )
-
-    def _get_neural_ode(
-        self,
-        X,
-        seq,
-        chain_M,
-        optional_features,
-        mask,
-        residue_idx,
-        chain_encoding_all,
-    ):
-        class torch_wrapper(torch.nn.Module):
-            """Wraps model to torchdyn compatible format."""
-
-            def __init__(
-                self,
-                model,
-                frames,
-                chain_M,
-                mask,
-                seq,
-                optional_features,
-                residue_idx,
-                chain_encoding_all,
-                predict_angles=False,
-            ):
-                super().__init__()
-                self.model = model
-                self.frames = frames
-                self.chain_M = chain_M
-                self.mask = mask
-                self.chain_M_bool = chain_M.bool()
-                self.mask_bool = mask.bool()
-                self.seq = seq
-                self.optional_features = optional_features
-                self.residue_idx = residue_idx
-                self.chain_encoding_all = chain_encoding_all
-                self.predict_angles = predict_angles
-                *_, self.local_coords = get_orientations(frames)
-
-            def forward(self, t, x, args=None):
-                if not self.predict_angles:
-                    orientations = Diffuser.random_uniform_so3(
-                        size=(X.shape[0], X.shape[1]), device=X.device
-                    ).to(dtype=X.dtype)
-                    self.frames[self.chain_M_bool] = torch.einsum("b n i d, b n k d -> b n k i", orientations, self.local_coords)[self.chain_M_bool]
-                    x = repeat(x, "b n d -> b n 4 d") + self.frames
-                else:
-                    raise NotImplementedError
-                _, translation, *_ = self.model.run_cycle(
-                    0,
-                    seq=self.seq,
-                    coords=x,
-                    chain_M=self.chain_M,
-                    optional_features=self.optional_features,
-                    mask=self.mask,
-                    residue_idx=self.residue_idx,
-                    chain_encoding_all=self.chain_encoding_all,
-                    transform=None,
-                    timestep=t * torch.ones(x.shape[0]).to(x.device),
-                    corrupt=False,
-                    test=True,
-                )
-                translation = -translation
-                translation[~self.chain_M_bool] = 0.0
-                translation[~self.mask_bool] = 0.0
-                return translation
-
-        node = NeuralODE(
-            torch_wrapper(
-                self,
-                frames=(X - X[:, :, [2]]),
-                chain_M=chain_M,
-                mask=mask,
-                seq=seq,
-                optional_features=optional_features,
-                residue_idx=residue_idx,
-                chain_encoding_all=chain_encoding_all,
-            ),
-            solver="dopri5",
-            sensitivity="adjoint",
-            atol=1e-2,
-            rtol=1e-3,
-        )
-        return node
 
     def diffuse(
         self,
@@ -1281,7 +1186,7 @@ class ProtFill(nn.Module):
             timestep = t * torch.ones(X.shape[0], dtype=torch.long)
             coords_ = coords.clone()
             for cycle in range(self.n_cycles):
-                coords_predicted, _, angles, logits, *_ = self.run_cycle(
+                coords_predicted, angles, logits, _ = self.run_cycle(
                     cycle,
                     seq=seq,
                     coords=coords_,
@@ -1370,27 +1275,18 @@ class ProtFill(nn.Module):
         )
         predicted_protein_entry.to_pickle(os.path.join(save_path, f"step_{t}.pickle"))
 
-    def process_sequence(self, h_V, seq, chain_M, cycle):
-        logits = self.W_out(h_V)
-        return logits, seq
-
     def process_structure(
-        self, coords, angles, vectors, chain_encoding_all, mask, chain_M, cycle
+        self, coords, angles, vectors, chain_encoding_all, mask, chain_M
     ):
-        if self.angle_layer is not None:
-            angles = self.angle_layer(angles)
-        elif self.vector_angles:
-            angles = vectors[:, :, 1, :]
-        if not self.diffusion:
-            angles = rearrange(angles, "b n ... -> (b n) ...")
+        angles = self.angle_layer(angles)
 
         chain_M_bool = chain_M.bool()
         coords[chain_M_bool] = (
             coords[chain_M_bool] + vectors[:, :, [0], :][chain_M_bool]
         )
-        translation = vectors[:, :, 0, :]
 
         if not self.diffusion:
+            angles = rearrange(angles, "b n ... -> (b n) ...")
             coords = self.rotate(
                 coords,
                 angles,
@@ -1399,10 +1295,7 @@ class ProtFill(nn.Module):
                 quaternion=False,
                 vector=False,
             )
-        return coords, angles, translation
-
-    def get_mu_t(self, x0, xt, x0_pred, timestep):
-        return self.diffusion._get_mu_t(x0, xt, x0_pred, timestep)
+        return coords, angles
 
     def load_state_dict(self, state_dict):
         strict = False
@@ -1476,18 +1369,12 @@ class ProtFill(nn.Module):
             timestep = torch.randint(1, self.num_diffusion_steps + 1, size=X.shape[:1])
         else:
             timestep = None
-        translation_gt, rotation_gt, seq_t, distribution = None, None, None, None
         for cycle in range(self.n_cycles):
             (
                 coords,
-                translation,
                 angles,
                 logits,
-                seq_t_,
-                translation_gt_,
-                rotation_gt_,
-                distribution_,
-                coords_t,
+                angles_gt
             ) = self.run_cycle(
                 cycle,
                 seq,
@@ -1499,20 +1386,14 @@ class ProtFill(nn.Module):
                 timestep,
                 test=test,
             )
-            if seq_t_ is not None:
-                seq_t = seq_t_
-            if rotation_gt_ is not None:
-                rotation_gt = rotation_gt_
-            if distribution_ is not None:
-                distribution = distribution_
             out = {"timestep": timestep}
             if self.predict_sequence:
                 out["seq"] = logits
-                out["seq_t"] = distribution
+                out["seq_t"] = S
             if self.predict_structure:
                 if self.diffusion:
                     out["rotation"] = angles
-                    out["rotation_gt"] = rotation_gt
+                    out["rotation_gt"] = angles_gt
                     out["CA"] = coords[:, :, 2]
                     out["CA_gt"] = X[:, :, 2]
                 else:
@@ -1521,8 +1402,6 @@ class ProtFill(nn.Module):
             if cycle < self.n_cycles - 1:
                 if logits is not None:
                     seq[chain_M.bool()] = torch.max(logits[chain_M.bool()], -1)[1]
-                elif seq_t is not None:
-                    seq[chain_M.bool()] = seq_t[chain_M.bool()]
                 coords_ = deepcopy(X)
                 coords_[chain_M.bool()] = coords[chain_M.bool()]
                 coords = coords_
