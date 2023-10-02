@@ -1110,11 +1110,6 @@ def parse(command=None):
         help="path for logs and model weights",
     )
     argparser.add_argument(
-        "--skip_clustering",
-        action="store_true",
-        help="skip using sequence identity clusters",
-    )
-    argparser.add_argument(
         "--load_experiment",
         type=str,
         default=None,
@@ -1130,18 +1125,6 @@ def parse(command=None):
         "--num_epochs", type=int, default=100, help="number of epochs to train for"
     )
     argparser.add_argument(
-        "--save_model_every_n_epochs",
-        type=int,
-        default=10,
-        help="save model weights every n epochs",
-    )
-    argparser.add_argument(
-        "--validate_every_n_epochs",
-        type=int,
-        default=1,
-        help="validate model every n epochs",
-    )
-    argparser.add_argument(
         "--batch_size", type=int, default=8, help="number of tokens for one batch"
     )
     argparser.add_argument(
@@ -1151,130 +1134,7 @@ def parse(command=None):
         help="maximum length of the protein complex",
     )
     argparser.add_argument(
-        "--hidden_dim", type=int, default=128, help="hidden model dimension"
-    )
-    argparser.add_argument(
-        "--num_encoder_layers", type=int, default=3, help="number of encoder layers"
-    )
-    argparser.add_argument(
-        "--num_decoder_layers", type=int, default=3, help="number of decoder layers"
-    )
-    argparser.add_argument(
-        "--num_encoder_mpnn_layers",
-        type=int,
-        default=1,
-        help="Number of stacked GVPs to use in one aggregation GVP layer inside the encoder (need encoder_type='gvp' to be used)",
-    )
-    argparser.add_argument(
-        "--num_decoder_mpnn_layers",
-        type=int,
-        default=1,
-        help="Number of stacked GVPs to use in one aggregation GVP layer inside the decoder (need decoder_type='gvp' to be used)",
-    )
-    argparser.add_argument(
-        "--num_neighbors",
-        type=int,
-        default=32,
-        help="number of neighbors for the sparse graph",
-    )
-    argparser.add_argument(
-        "--dropout", type=float, default=0.1, help="dropout level; 0.0 means no dropout"
-    )
-    argparser.add_argument(
-        "--gradient_norm",
-        type=float,
-        default=-1.0,
-        help="clip gradient norm, set to negative to omit clipping",
-    )
-    argparser.add_argument(
-        "--no_mixed_precision",
-        action="store_true",
-        help="train without mixed precision",
-    )
-    argparser.add_argument(
-        "--violation_loss_epoch",
-        type=int,
-        default=0,
-        help="epoch after which to start using the violation loss",
-    )
-
-    # New parameters
-    argparser.add_argument(
-        "--lower_masked_limit",
-        type=int,
-        default=15,
-        help="The minimum number of residues to mask in each protein (ignored if mask_whole_chains is true or masking_probability is specified)",
-    )
-    argparser.add_argument(
-        "--upper_masked_limit",
-        type=int,
-        default=100,
-        help="The maximum number of residues to mask in each protein (ignored if mask_whole_chains is true or masking_probability is specified)",
-    )
-    argparser.add_argument(
-        "--masking_probability",
-        type=float,
-        help="The probability of masking a residue (if specified, overrides lower_masked_limit and upper_masked_limit)",
-    )
-    argparser.add_argument(
-        "--mask_whole_chains",
-        action="store_true",
-        help="if true, lower_masked_limit, upper_masked_limit, masking_probability are ignored and entire chains are masked",
-    )
-    argparser.add_argument(
         "--device", type=str, default="cuda", help="The name of the torch device"
-    )
-    argparser.add_argument(
-        "--embedding_dim",
-        type=int,
-        default=128,
-        help="The dimension of the residue type embedding",
-    )
-    argparser.add_argument(
-        "--no_smoothing",
-        action="store_true",
-        help="Use a regular cross-entropy loss without smooting the one-hot encoding",
-    )
-    argparser.add_argument(
-        "--use_mean",
-        action="store_true",
-        help="Use mean over existing neighbors for aggregation instead of sum",
-    )
-    argparser.add_argument(
-        "--use_egnn_for_refinement",
-        action="store_true",
-        help="Use an additional EGNN pre-processing layer for sructure refinement",
-    )
-    argparser.add_argument(
-        "--predict_structure",
-        action="store_true",
-        help="Predict the structure of the protein instead of the sequence",
-    )
-    argparser.add_argument(
-        "--predict_angles",
-        action="store_true",
-        help="Predict the frame orientations",
-    )
-    argparser.add_argument(
-        "--small_dataset", action="store_true", help="Use 0.1 of the training clusters"
-    )
-    argparser.add_argument(
-        "--tiny_dataset", action="store_true", help="Use 0.03 of the training clusters"
-    )
-    argparser.add_argument(
-        "--half_dataset", action="store_true", help="Use 0.5 of the training clusters"
-    )
-    argparser.add_argument(
-        "--train_force_binding_sites_frac",
-        type=float,
-        default=0.15,
-        help="If > 0, this fraction of regions sampled in polymer chains will be forced to be around the binding sites (in training)",
-    )
-    argparser.add_argument(
-        "--val_force_binding_sites_frac",
-        type=float,
-        default=0.15,
-        help="If > 0, this fraction of regions sampled in polymer chains will be forced to be around the binding sites (in validation)",
     )
     argparser.add_argument(
         "--test",
@@ -1292,46 +1152,10 @@ def parse(command=None):
         help="Evaluate on the validation set instead of training (make sure to set previous_checkpoint)",
     )
     argparser.add_argument(
-        "--ignore_unknown_residues",
-        action="store_true",
-        help="Predict 20 aminoacids; if the residue type is unknown in the ground truth, mask it in loss calculation",
-    )
-    argparser.add_argument(
-        "--debug", action="store_true", help="Only process 1000 files per subset"
-    )
-    argparser.add_argument(
-        "--load_to_ram",
-        action="store_true",
-        help="Load the data to RAM (use with caution! make sure the RAM is big enough!)",
-    )
-    argparser.add_argument(
-        "--interpolate",
-        choices=["none", "only_middle", "all"],
-        default="none",
-        help="Choose none for no interpolation, only_middle for only linear interpolation in the middle, all for linear interpolation + ends generation",
-    )
-    argparser.add_argument(
-        "--node_features",
-        default=None,
-        help='The node features type; choices = ["dihedral", "chemical", "topological", "esm", "sidechain_orientation", "backbone_orientation", "secondary_structure", "c_beta"] and combinations (e.g. "chemical+sidechain_orientation")',
-    )
-    argparser.add_argument(
-        "--lr",
-        type=float,
-        default=None,
-        help="If None, NoamOpt is used, otherwise Adam with this starting learning rate",
-    )
-    argparser.add_argument(
-        "--debug_file",
-        default=None,
-        type=str,
-        help="If not None, open a specific file instead of loading the dataset",
-    )
-    argparser.add_argument(
-        "--noise_unknown",
+        "--noise_std",
         default=None,
         type=float,
-        help="The noise level to apply to masked structure (by default same as backbone_noise)",
+        help="The noise standard deviation",
     )
     argparser.add_argument(
         "--n_cycles",
@@ -1340,132 +1164,12 @@ def parse(command=None):
         help="Number of refinement cycles (1 = only prediction, no refinement)",
     )
     argparser.add_argument(
-        "--seq_init_mode",
+        "--message_passing",
         choices=[
-            "zeros",
-            "random",
-            "esm_one_hot",
-            "esm_probabilities",
-            "uniform_probabilities",
-        ],
-        default="zeros",
-        help="The sequence initialization mode for one-shot decoders",
-    )
-    argparser.add_argument(
-        "--cycle_over_embedding",
-        action="store_true",
-        help="Run cycles at the embedding level instead of the sequence level",
-    )
-    argparser.add_argument(
-        "--double_sequence_features",
-        action="store_true",
-        help="If true, sequence is used both in the encoder and in the decoder",
-    )
-    argparser.add_argument(
-        "--decoder_type",
-        choices=[
-            "mpnn",
-            "mpnn_auto",
-            "egnn",
             "gvp",
             "gvp_orig",
-            "mpnn_enc",
-            "genprot",
-            "egnn_orig",
-            "egnn_refine",
-            "egnn_geom",
-            "egnn_lucid",
-            "real_sake",
         ],
         default="mpnn_auto",
-    )
-    argparser.add_argument(
-        "--encoder_type",
-        choices=[
-            "mpnn",
-            "egnn",
-            "gvp",
-            "gvp_orig",
-            "genprot",
-            "egnn_orig",
-            "egnn_refine",
-            "egnn_geom",
-            "egnn_lucid",
-            "real_sake",
-        ],
-        default="mpnn",
-    )
-    argparser.add_argument(
-        "--use_attention_in_encoder",
-        action="store_true",
-        help="If true, add global node attention to (MPNN) encoder layers",
-    )
-    argparser.add_argument(
-        "--use_attention_in_decoder",
-        action="store_true",
-        help="If true, add global node attention to (MPNN) decoder layers",
-    )
-    argparser.add_argument(
-        "--use_pna_in_encoder",
-        action="store_true",
-        help="If true, add PNA aggregation to encoder layers",
-    )
-    argparser.add_argument(
-        "--use_pna_in_decoder",
-        action="store_true",
-        help="If true, add PNA aggregation to decoder layers",
-    )
-    argparser.add_argument(
-        "--separate_modules_num",
-        default=1,
-        type=int,
-        help="The number of separate modules to use for recycling (if n_cycles > separate_modules_num, the last module is used for all remaining cycles)",
-    )
-    argparser.add_argument(
-        "--struct_loss_type",
-        choices=["mse", "huber", "relaxed_mse"],
-        help="The type of the structure loss",
-        default="mse",
-    )
-    argparser.add_argument(
-        "--skip_tqdm",
-        action="store_true",
-        help="Skip drawing the tqdm progressbars for epoch progress",
-    )
-    argparser.add_argument(
-        "--only_cycle_over_decoder",
-        action="store_true",
-        help="If true (and cycle_over_embedding is true, and n_cycles > 1), only cycle over the decoder, not the encoder",
-    )
-    argparser.add_argument(
-        "--not_shuffle_clusters",
-        action="store_true",
-        help="Use a fixed representative for each cluster instead of shuffling them",
-    )
-    argparser.add_argument(
-        "--random_connections_frac",
-        type=float,
-        default=0.0,
-        help="The fraction of random connections to add to the graph",
-    )
-    argparser.add_argument(
-        "--test_invariance",
-        action="store_true",
-        help="If true, test the SE(3) sequence invariance and/or coordinate equivariance of the model",
-    )
-    argparser.add_argument(
-        "--skip_weight_init",
-        action="store_true",
-        help="Skip weight initialization",
-    )
-    argparser.add_argument(
-        "--log_wandb_name",
-        help="Experiment name for wandb (if not given, experiment is not logged)",
-    )
-    argparser.add_argument(
-        "--use_checkpointing",
-        action="store_true",
-        help="Use gradient checkpointing",
     )
     argparser.add_argument(
         "--predict_file",
@@ -1473,97 +1177,7 @@ def parse(command=None):
     )
     argparser.add_argument(
         "--predict_positions",
-        help="Mask specific positions in the given file (only with predict_file); e.g. A, A:5-10,20,30-40 (fasta-based numbering, ends not included)",
-    )
-    argparser.add_argument(
-        "--num_predictions",
-        type=int,
-        default=1,
-        help="Number of predictions to make (only with predict_file; if > 1, the model is run in train mode)",
-    )
-    argparser.add_argument(
-        "--temperature",
-        type=float,
-        default=1.0,
-        help="Temperature for sampling (only with predict_file or test and with AR models)",
-    )
-    argparser.add_argument(
-        "--seed",
-        type=int,
-        help="Random seed",
-    )
-    argparser.add_argument(
-        "--co_design",
-        choices=["none", "seq", "share_enc", "share_all"],
-        help="Co-design options",
-        default="none",
-    )
-    argparser.add_argument(
-        "--struct_loss_weight",
-        type=float,
-        default=1.0,
-        help="Structure loss weight",
-    )
-    argparser.add_argument(
-        "--seq_loss_weight",
-        type=float,
-        default=1.0,
-        help="Sequence loss weight",
-    )
-    argparser.add_argument(
-        "--quaternion",
-        action="store_true",
-        help="Use quaternions instead of Euler angles",
-    )
-    argparser.add_argument(
-        "--violation_loss_weight",
-        type=float,
-        default=0.0,
-        help="Violations loss weight",
-    )
-    argparser.add_argument(
-        "--backbone_noise",
-        type=float,
-        default=0.0,
-        help="Backbone noise",
-    )
-    argparser.add_argument(
-        "--m_dim",
-        type=int,
-        default=64,
-        help="m_dim in EGNN",
-    )
-    argparser.add_argument(
-        "--m_factor",
-        type=int,
-        default=1,
-        help="m_factor in EGNN",
-    )
-    argparser.add_argument(
-        "--hidden_factor",
-        type=int,
-        default=1,
-        help="hidden_factor in EGNN",
-    )
-    argparser.add_argument(
-        "--detach_between_cycles",
-        action="store_true",
-        help="Detach the graph between cycles",
-    )
-    argparser.add_argument(
-        "--not_pass_features",
-        action="store_true",
-        help="Do not pass features between encoder and decoder",
-    )
-    argparser.add_argument(
-        "--keep_edge_model",
-        action="store_true",
-        help="Keep the edge model in the last layer",
-    )
-    argparser.add_argument(
-        "--vector_angles",
-        action="store_true",
-        help="Use vector angles instead of Euler angles",
+        help="Mask specific positions in the given file (only with predict_file); e.g. A, A:5-10,20,30-40 (fasta-based numbering)",
     )
     argparser.add_argument(
         "--linear_layers_num",
@@ -1572,36 +1186,14 @@ def parse(command=None):
         help="The number of linear graph layers to use in the decoder (GVP)",
     )
     argparser.add_argument(
-        "--pass_edge_vectors",
-        action="store_true",
-        help="Pass edge vectors to the decoder (GVP)",
-    )
-
-    # Temporary
-    argparser.add_argument(
-        "--predict_oxygens",
-        action="store_true",
-        help="Predict oxygen rotation angle (GVP only)",
-    )
-    argparser.add_argument(
-        "--no_edge_update",
-        action="store_true",
-        help="Do not update edge vectors",
-    )
-    argparser.add_argument(
         "--diffusion",
         action="store_true",
         help="Use diffusion",
     )
     argparser.add_argument(
-        "--flow_matching",
-        action="store_true",
-        help="Use flow matching",
-    )
-    argparser.add_argument(
         "--num_diffusion_steps",
         type=int,
-        default=300,
+        default=50,
         help="Number of diffusion steps",
     )
     argparser.add_argument(
@@ -1610,142 +1202,10 @@ def parse(command=None):
         help="Mask all CDRs",
     )
     argparser.add_argument(
-        "--variance_schedule",
-        choices=["cosine", "linear", "quadratic"],
-        default="linear",
-        help="Variance schedule",
-    )
-    argparser.add_argument(
-        "--freeze_structure",
-        action="store_true",
-        help="Freeze structure modules (when co_design is seq)",
-    )
-    argparser.add_argument(
-        "--mask_sequence",
-        action="store_true",
-        help="Mask sequence",
-    )
-    argparser.add_argument(
-        "--seq_diffusion_type",
-        choices=["mask", "uniform"],
-        default="mask",
-        help="Sequence diffusion type",
-    )
-    argparser.add_argument(
-        "--scale_timestep",
-        action="store_true",
-        help="Scale timestep feature",
-    )
-    argparser.add_argument(
-        "--reset_masked",
-        action="store_true",
-        help="Reset masked positions in diffusion",
-    )
-    argparser.add_argument(
-        "--diffusion_parameterization",
-        choices=["noise", "x0", "mu_t", "v"],
-        default="noise",
-        help="Predict noise, x0 or mu_t with the translation diffusion model",
-    )
-    argparser.add_argument(
-        "--variance_scale",
-        type=float,
-        default=1.0,
-        help="Variance scale for sampling",
-    )
-    argparser.add_argument(
-        "--not_recover_x0",
-        action="store_true",
-        help="Do not recover x0 in the translation diffusion model (when diffusion_parameterization is mu_t)",
-    )
-    argparser.add_argument(
-        "--force_neighbor_edges",
-        action="store_true",
-        help="Always form edges between neighbors in the chain",
-    )
-    argparser.add_argument(
         "--test_cdr",
         choices=["L1", "L2", "L3", "H1", "H2", "H3"],
         default=None,
         help="Test on a single CDR",
-    )
-    argparser.add_argument(
-        "--linear_interpolation",
-        action="store_true",
-        help="Use linear interpolation for sampling",
-    )
-    argparser.add_argument(
-        "--skip_diffuse",
-        action="store_true",
-        help="Validate the same way as in the training",
-    )
-    argparser.add_argument(
-        "--add_mask_feature",
-        action="store_true",
-        help="Add mask feature",
-    )
-    argparser.add_argument(
-        "--add_anchor_feature",
-        action="store_true",
-        help="Add anchor feature",
-    )
-    argparser.add_argument(
-        "--sequence_in_encoder",
-        action="store_true",
-        help="Pass sequence to the encoder",
-    )
-    argparser.add_argument(
-        "--weighted_diff_loss",
-        action="store_true",
-        help="Weighted diffusion loss",
-    )
-    argparser.add_argument(
-        "--pos_cosine_nu",
-        type=float,
-        default=1.0,
-        help="The nu parameter for adaptive cosine variance schedule for CA coordinates",
-    )
-    argparser.add_argument(
-        "--rot_cosine_nu",
-        type=float,
-        default=1.0,
-        help="The nu parameter for adaptive cosine variance schedule for orientations",
-    )
-    argparser.add_argument(
-        "--seq_cosine_nu",
-        type=float,
-        default=1.0,
-        help="The nu parameter for adaptive cosine variance schedule for sequence",
-    )
-    argparser.add_argument(
-        "--barycenter",
-        action="store_true",
-        help="Use barycenter as mean of noise",
-    )
-    argparser.add_argument(
-        "--noise_around_interpolation",
-        action="store_true",
-        help="Add noise around linear interpolation",
-    )
-    argparser.add_argument(
-        "--patch_around_mask",
-        action="store_true",
-        help="Patch around masked positions",
-    )
-    argparser.add_argument(
-        "--only_separate_seq",
-        action="store_true",
-        help="Only use multiple separate modules for sequence",
-    )
-    argparser.add_argument(
-        "--only_separate_dec",
-        action="store_true",
-        help="Only use multiple separate modules in the decoder",
-    )
-    argparser.add_argument(
-        "--only_use_linear_for_str",
-        action="store_true",
-        help="Only use linear layers for structure",
     )
     argparser.add_argument(
         "--initial_patch_size",
@@ -1754,78 +1214,44 @@ def parse(command=None):
         help="Initial patch size for patching",
     )
     argparser.add_argument(
-        "--mask_sequential",
-        action="store_true",
-        help="Mask sequential positions",
-    )
-    argparser.add_argument(
-        "--use_graph_context",
-        action="store_true",
-        help="Use timestep as global context",
-    )
-    argparser.add_argument(
-        "--norm_coors",
-        action="store_true",
-        help="Normalize coordinates",
-    )
-    argparser.add_argument(
-        "--old_noise",
+        "--alternative_noising",
         action="store_true",
         help="Add noise to coordinates instead of replacing them",
-    )
-    argparser.add_argument(
-        "--noise_structure",
-        action="store_true",
-        help="Add noise to structure",
-    )
-    # argparser.add_argument(
-    #     "--no_oxygen",
-    #     action="store_true",
-    #     help="Do not use oxygen information",
-    # )
-    argparser.add_argument(
-        "--no_added_diff_noise",
-        action="store_true",
-        help="Do not add diffusion noise",
-    )
-    argparser.add_argument(
-        "--cosine_cutoff",
-        default=0.8,
-        type=float,
-        help="The cosine variance schedule cutoff for the diffusion model",
-    )
-    argparser.add_argument(
-        "--all_x0",
-        action="store_true",
-        help="Use all x0 parameterization in the diffusion model",
     )
 
     args = argparser.parse_args()
 
-    if args.test_invariance:
-        args.no_mixed_precision = True
-        args.debug = True
-        args.max_protein_length = 150
-    if args.device == "cpu":
-        args.no_mixed_precision = True
-    for prefix in ["egnn", "gvp"]:
-        if args.decoder_type.startswith(prefix) or args.encoder_type.startswith(prefix):
-            args.no_mixed_precision = True
+    args.no_mixed_precision = True
     if args.test_excluded or args.validate:
         args.test = True
-    if args.flow_matching:
-        args.diffusion = True
-        args.diffusion_parameterization = "noise"
-    # args.predict_angles = args.predict_structure
+    args.patch_around_mask = not args.predict_file
 
-    args.scale_timestep = True
-    args.update_edges = not args.no_edge_update
     args.use_edge_vectors = True
-    args.no_sequence_in_encoder = not args.sequence_in_encoder
-    args.force = True
-    args.use_node_dropout = True
-    args.less_dropout = False
-    args.no_oxygen = True
+    # args.use_node_dropout = True
+    # args.less_dropout = False
+    args.no_oxygen_features = True
+
+    args.validate_every_n_epochs = 10
+    args.save_model_every_n_epochs = 10
+
+    args.hidden_dim = 128
+    args.num_encoder_layers = 3
+    args.num_decoder_layers = 3
+    args.num_encoder_mpnn_layers = 1
+    args.num_decoder_mpnn_layers = 1
+    args.num_neighbors = 32
+    args.dropout = 0.2
+    args.struct_loss_weight = 1.
+    args.seq_loss_weight = 1.
+    args.violation_loss_weight = 0.
+    args.violation_loss_start_epoch = 0
+    args.no_added_diff_noise = True
+
+    args.train_force_binding_sites_frac = 0.5
+    args.val_force_binding_sites_frac = 1.
+    args.lower_masked_limit = 15
+    args.upper_masked_limit = 50
+
     return args
 
 
