@@ -761,7 +761,7 @@ class GVPe_Encoder(Encoder):
         super().__init__()
         self.return_X = False
         self.use_edge_vectors = True
-        self.pass_edge_vectors = True
+        self.pass_edge_vectors = False
         if self.return_X:
             vector_dim = 1
         else:
@@ -839,7 +839,7 @@ class GVPe_Decoder(Decoder):
     def __init__(self, args) -> None:
         super().__init__()
         self.use_edge_vectors = True
-        self.pass_edge_vectors = True
+        self.pass_edge_vectors = False
         node_dims = [
             (args.hidden_dim, args.vector_dim) for _ in range(args.num_decoder_layers - 1)
         ] + [(args.hidden_dim, 1)]

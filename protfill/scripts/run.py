@@ -468,12 +468,14 @@ def run(args, trial=None):
     print("\nDATA LOADING")
     use_frac = 1.
     if args.test:
-        if args.test_excluded:
+        if args.easy_test:
             folder, clustering_dict_path = "excluded", excluded_dict
         elif args.validate:
             folder, clustering_dict_path = "valid", validation_dict
-        else:
+        elif args.hard_test:
             folder, clustering_dict_path = "test", test_dict
+        else:
+            raise NotImplementedError
         test_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, folder),
             clustering_dict_path=clustering_dict_path,
@@ -956,39 +958,18 @@ def parse(command=None):
         "--device", type=str, default="cuda", help="The name of the torch device"
     )
     argparser.add_argument(
-        "--test",
-        action="store_true",
-        help="Evaluate on the test set instead of training (make sure to set previous_checkpoint)",
-    )
-    argparser.add_argument(
-        "--test_excluded",
-        action="store_true",
-        help="Evaluate on the excluded set instead of training (make sure to set previous_checkpoint)",
-    )
-    argparser.add_argument(
-        "--validate",
-        action="store_true",
-        help="Evaluate on the validation set instead of training (make sure to set previous_checkpoint)",
-    )
-    argparser.add_argument(
-        "--noise_std",
-        default=None,
-        type=float,
-        help="The noise standard deviation",
-    )
-    argparser.add_argument(
         "--n_cycles",
-        default=1,
+        default=3,
         type=int,
         help="Number of refinement cycles (1 = only prediction, no refinement)",
     )
     argparser.add_argument(
         "--message_passing",
         choices=[
-            "gvp",
             "gvpe",
+            "gvp",
         ],
-        default="mpnn_auto",
+        default="gvpe",
     )
     argparser.add_argument(
         "--predict_file",
@@ -1043,12 +1024,28 @@ def parse(command=None):
         action="store_true",
     )
 
+    argparser.add_argument(
+        "--hard_test",
+        action="store_true",
+        help="Evaluate on the test set instead of training (make sure to set previous_checkpoint)",
+    )
+    argparser.add_argument(
+        "--easy_test",
+        action="store_true",
+        help="Evaluate on the excluded set instead of training (make sure to set previous_checkpoint)",
+    )
+    argparser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Evaluate on the validation set instead of training (make sure to set previous_checkpoint)",
+    )
+
     args = argparser.parse_args()
 
     args.no_mixed_precision = True
-    if args.test_excluded or args.validate:
-        args.test = True
+    args.test = args.easy_test or args.hard_test or args.validate
     args.patch_around_mask = not args.predict_file
+    args.noise_std = 1 if args.diffusion else 0.1
 
     args.use_edge_vectors = True
     args.no_oxygen_features = True

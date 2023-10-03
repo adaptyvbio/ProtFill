@@ -80,25 +80,172 @@ class Rotation:
         )
 
     @staticmethod
-    def rotation_matrices_from_angles(angles, vector=False, oxy_angle=None):
+    def rotation_matrices_from_angles(angles):
         """
         Computes a tensor of 3D rotation matrices from a tensor of 3D rotation angles.
         """
         # Check if the angles are in the correct shape (B * N, 3) or (B * N, 3, 3) for vector angles
-        if (not vector and len(angles.shape) == 3) or (
-            vector and len(angles.shape) == 4
-        ):
+        if len(angles.shape) == 3:
             angles = rearrange(angles, "b n ... -> (b n) ...")
         # Extract the rotation angles for each matrix
         alpha, beta, gamma = torch.chunk(angles, 3, dim=1)
 
         # Compute the rotation matrices
-        R_x = Rotation.R_x(alpha, vector=vector)
-        R_y = Rotation.R_y(beta, vector=vector)
-        R_z = Rotation.R_z(gamma, vector=vector)
+        R_x = Rotation.R_x(alpha, vector=False)
+        R_y = Rotation.R_y(beta, vector=False)
+        R_z = Rotation.R_z(gamma, vector=False)
 
         # Return the composed rotation matrices
-        return torch.einsum("nij,njk,nkl->nil", R_z, R_y, R_x), oxy_angle
+        return torch.einsum("nij,njk,nkl->nil", R_z, R_y, R_x)
+    
+    @staticmethod
+    def rotate(
+        coords,
+        angles,
+        chain_encoding,
+        mask_exist,
+    ):
+        batch_size = coords.size(0)
+        coords = rearrange(coords, "b n k d -> (b n) k d")
+
+        # center the coordinates on CA
+        center = coords[:, 2, :].unsqueeze(1)
+        coords = coords - center
+
+        # compute rotation matrices
+        R = Rotation.rotation_matrices_from_angles(angles)
+
+        # rotate so that CA-N is the z-axis and (CA-N x CA-C) is the y-axis
+        new_oz = coords[:, 0]  # CA-N
+        eps = 1e-7  # to avoid numerical issues
+        cos = new_oz[:, 2] / (
+            (new_oz[:, 1] ** 2 + new_oz[:, 2] ** 2 + 1e-7).sqrt() + 1e-7
+        )
+        cos = torch.clamp(cos, -1 + eps, 1 - eps)
+        a = torch.arccos(cos)
+        mask = new_oz[:, 1] < 0
+        a[mask] = -a[mask]
+        R_x = Rotation.R_x(repeat(a, "l -> l 1"))
+        coords = torch.einsum("lkj,lij->lki", coords, R_x)
+        new_oz = coords[:, 0]  # CA-N
+        cos = new_oz[:, 2] / (
+            (new_oz[:, 0] ** 2 + new_oz[:, 2] ** 2 + 1e-7).sqrt() + 1e-7
+        )
+        cos = torch.clamp(cos, -1 + eps, 1 - eps)
+        b = torch.arccos(cos)
+        mask = new_oz[:, 0] > 0
+        b[mask] = -b[mask]
+        R_y = Rotation.R_y(repeat(b, "l -> l 1"))
+        coords = torch.einsum("lkj,lij->lki", coords, R_y)
+        new_oy = torch.cross(coords[:, 0], coords[:, 1])  # (CA-N x CA-C)
+        cos = new_oy[:, 1] / (
+            (new_oy[:, 1] ** 2 + new_oy[:, 0] ** 2 + 1e-7).sqrt() + 1e-7
+        )
+        cos = torch.clamp(cos, -1 + eps, 1 - eps)
+        g = torch.arccos(cos)
+        mask = new_oy[:, 0] < 0
+        g[mask] = -g[mask]
+        R_z = Rotation.R_z(repeat(g, "l -> l 1"))
+        coords = torch.einsum("lkj,lij->lki", coords, R_z)
+
+        # apply the rotation
+        coords = torch.einsum("lkj,lij->lki", coords, R)
+
+        # go back to global orientations
+        R_z = Rotation.R_z(repeat(-g, "l -> l 1"))
+        coords = torch.einsum("lkj,lij->lki", coords, R_z)
+        R_y = Rotation.R_y(repeat(-b, "l -> l 1"))
+        coords = torch.einsum("lkj,lij->lki", coords, R_y)
+        R_x = Rotation.R_x(repeat(-a, "l -> l 1"))
+        coords = torch.einsum("lkj,lij->lki", coords, R_x)
+
+        # uncenter the coordinates
+        coords = coords + center
+        coords = rearrange(coords, "(b n) k d -> b n k d", b=batch_size)
+
+        # rotate C=O so that it is in the plane defined by C-N' and C-CA
+        coords = Rotation.rotate_oxygens(
+            coords, chain_encoding, mask_exist,
+        )
+        return coords
+
+    @staticmethod
+    def rotate_oxygens(
+        coords, chain_encoding, mask_exist,
+    ):
+        # add the next N to the atoms
+        eps = 1e-7
+        coords_oxy = torch.cat([coords[:, :-1, :], coords[:, 1:, [0]]], dim=-2)
+
+        # rotation axis: C-N' x C-CA, angles: 121°
+        new_oz = torch.cross(
+            coords_oxy[:, :, 4] - coords_oxy[:, :, 1],
+            coords_oxy[:, :, 2] - coords_oxy[:, :, 1],
+        )  # C-N' x C-CA
+        angle = torch.ones_like(mask_exist[:, :-1]) * 121 * torch.pi / 180
+
+        # center the coordinates on C
+        center = coords_oxy[:, :, 1, :].unsqueeze(-2)
+        coords_oxy = coords_oxy - center
+
+        # rotate so that the new axis is in the (x,z) plane
+        cos = new_oz[:, :, 2] / (
+            (new_oz[:, :, 1] ** 2 + new_oz[:, :, 2] ** 2 + 1e-7).sqrt() + 1e-7
+        )
+        cos = torch.clamp(cos, -1 + eps, 1 - eps)
+        a = torch.arccos(cos)
+        mask = new_oz[:, :, 1] < 0
+        a[mask] = -a[mask]
+        R_x = Rotation.R_x(rearrange(a, "b l -> (b l) 1"))
+        R_x = rearrange(R_x, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
+        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_x)
+
+        # recompute the new axis
+        new_oz = torch.cross(
+            coords_oxy[:, :, 4] - coords_oxy[:, :, 1],
+            coords_oxy[:, :, 2] - coords_oxy[:, :, 1],
+        )  # C-N' x C-CA
+
+        # rotate so that the new axis is in the (y,z) plane
+        cos = new_oz[:, :, 2] / (
+            (new_oz[:, :, 0] ** 2 + new_oz[:, :, 2] ** 2 + 1e-7).sqrt() + 1e-7
+        )
+        cos = torch.clamp(cos, -1 + eps, 1 - eps)
+        b = torch.arccos(cos)
+        mask = new_oz[:, :, 0] > 0
+        b[mask] = -b[mask]
+        R_y = Rotation.R_y(rearrange(b, "b l -> (b l) 1"))
+        R_y = rearrange(R_y, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
+        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_y)
+
+        # rotate C-CA unit vector by 121° around the new axis and multiply by 1.24 to make it a C=O bond
+        R_z = Rotation.R_z(rearrange(angle, "b l ... -> (b l) 1 ..."))
+        R_z = rearrange(R_z, "(b l) k j -> b l k j", b=coords.shape[0])
+        n = coords_oxy[:, :, [2]] - coords_oxy[:, :, [1]]
+        n = n / (torch.norm(n, dim=-1, keepdim=True) + 1e-7)
+        coords_O = torch.einsum("blkj,blij->blki", n, R_z) * 1.24
+        coords_oxy = torch.cat([coords_oxy[:, :, :3], coords_O], dim=-2)
+
+        # go back to global orientations
+        R_y = Rotation.R_y(rearrange(-b, "b l -> (b l) 1"))
+        R_y = rearrange(R_y, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
+        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_y)
+        R_x = Rotation.R_x(rearrange(-a, "b l -> (b l) 1"))
+        R_x = rearrange(R_x, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
+        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_x)
+        coords_oxy = coords_oxy + center
+
+        # remove updates in residues that neighbor a gap or a chain change
+        mask_ = ~(mask_exist[:, 1:].bool())
+        coords_oxy[mask_] = coords[:, :-1][mask_]
+        chain_change = torch.diff(chain_encoding, dim=1) != 0
+        coords_oxy[chain_change] = coords[:, :-1][chain_change]
+
+        # add the last aminoacid
+        coords = torch.cat([coords_oxy, coords[:, -1:]], dim=1)
+
+        return coords
+
 
 
 def combine_decoders(coords_decoder, seq_decoder, predict_angles):
@@ -604,175 +751,7 @@ class ProtFill(nn.Module):
             "b n i d, b n k d -> b n k i", orientations, local_coords
         )
         coords[~mask.bool()] = 0
-        # coords = self.rotate_oxygens(coords, chain_encoding_all, mask)
-        return coords
-
-    def rotate(
-        self,
-        coords,
-        angles,
-        chain_encoding,
-        mask_exist,
-        quaternion=False,
-        vector=False,
-        matrix=False,
-    ):
-        batch_size = coords.size(0)
-        oxy_angle = None
-        coords = rearrange(coords, "b n k d -> (b n) k d")
-
-        # center the coordinates on CA
-        center = coords[:, 2, :].unsqueeze(1)
-        coords = coords - center
-
-        # compute rotation matrices
-        if quaternion:
-            R, oxy_angle = self.rotation_matrices_from_quaternions(angles)
-        elif matrix:
-            R = rearrange(angles, "b n ... -> (b n) ...")
-        elif vector:
-            if self.diffusion:
-                R = Diffuser()._so3vec_to_rot(angles)
-            else:
-                R, oxy_angle = self.rotation_matrices_from_angles(angles, vector=True)
-        else:
-            R, oxy_angle = self.rotation_matrices_from_angles(angles, vector=False)
-
-        # rotate so that CA-N is the z-axis and (CA-N x CA-C) is the y-axis
-        new_oz = coords[:, 0]  # CA-N
-        eps = 1e-7  # to avoid numerical issues
-        cos = new_oz[:, 2] / (
-            (new_oz[:, 1] ** 2 + new_oz[:, 2] ** 2 + 1e-7).sqrt() + 1e-7
-        )
-        cos = torch.clamp(cos, -1 + eps, 1 - eps)
-        a = torch.arccos(cos)
-        mask = new_oz[:, 1] < 0
-        a[mask] = -a[mask]
-        R_x = self.R_x(repeat(a, "l -> l 1"))
-        coords = torch.einsum("lkj,lij->lki", coords, R_x)
-        new_oz = coords[:, 0]  # CA-N
-        cos = new_oz[:, 2] / (
-            (new_oz[:, 0] ** 2 + new_oz[:, 2] ** 2 + 1e-7).sqrt() + 1e-7
-        )
-        cos = torch.clamp(cos, -1 + eps, 1 - eps)
-        b = torch.arccos(cos)
-        mask = new_oz[:, 0] > 0
-        b[mask] = -b[mask]
-        R_y = self.R_y(repeat(b, "l -> l 1"))
-        coords = torch.einsum("lkj,lij->lki", coords, R_y)
-        new_oy = torch.cross(coords[:, 0], coords[:, 1])  # (CA-N x CA-C)
-        cos = new_oy[:, 1] / (
-            (new_oy[:, 1] ** 2 + new_oy[:, 0] ** 2 + 1e-7).sqrt() + 1e-7
-        )
-        cos = torch.clamp(cos, -1 + eps, 1 - eps)
-        g = torch.arccos(cos)
-        mask = new_oy[:, 0] < 0
-        g[mask] = -g[mask]
-        R_z = self.R_z(repeat(g, "l -> l 1"))
-        coords = torch.einsum("lkj,lij->lki", coords, R_z)
-
-        # apply the rotation
-        coords = torch.einsum("lkj,lij->lki", coords, R)
-
-        # go back to global orientations
-        R_z = self.R_z(repeat(-g, "l -> l 1"))
-        coords = torch.einsum("lkj,lij->lki", coords, R_z)
-        R_y = self.R_y(repeat(-b, "l -> l 1"))
-        coords = torch.einsum("lkj,lij->lki", coords, R_y)
-        R_x = self.R_x(repeat(-a, "l -> l 1"))
-        coords = torch.einsum("lkj,lij->lki", coords, R_x)
-
-        # uncenter the coordinates
-        coords = coords + center
-        coords = rearrange(coords, "(b n) k d -> b n k d", b=batch_size)
-
-        # rotate C=O so that it is in the plane defined by C-N' and C-CA
-        coords = self.rotate_oxygens(
-            coords, chain_encoding, mask_exist, angle=oxy_angle, vector=vector
-        )
-        return coords
-
-    def rotate_oxygens(
-        self, coords, chain_encoding, mask_exist, angle=None, vector=False
-    ):
-        # set values
-        if angle is None:
-            vector = False
-        else:
-            raise NotImplementedError
-
-        # add the next N to the atoms
-        eps = 1e-7
-        coords_oxy = torch.cat([coords[:, :-1, :], coords[:, 1:, [0]]], dim=-2)
-
-        # rotation axis: C-N' x C-CA, angles: 121°
-        new_oz = torch.cross(
-            coords_oxy[:, :, 4] - coords_oxy[:, :, 1],
-            coords_oxy[:, :, 2] - coords_oxy[:, :, 1],
-        )  # C-N' x C-CA
-        if angle is None:
-            angle = torch.ones_like(mask_exist[:, :-1]) * 121 * torch.pi / 180
-
-        # center the coordinates on C
-        center = coords_oxy[:, :, 1, :].unsqueeze(-2)
-        coords_oxy = coords_oxy - center
-
-        # rotate so that the new axis is in the (x,z) plane
-        cos = new_oz[:, :, 2] / (
-            (new_oz[:, :, 1] ** 2 + new_oz[:, :, 2] ** 2 + 1e-7).sqrt() + 1e-7
-        )
-        cos = torch.clamp(cos, -1 + eps, 1 - eps)
-        a = torch.arccos(cos)
-        mask = new_oz[:, :, 1] < 0
-        a[mask] = -a[mask]
-        R_x = self.R_x(rearrange(a, "b l -> (b l) 1"))
-        R_x = rearrange(R_x, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
-        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_x)
-
-        # recompute the new axis
-        new_oz = torch.cross(
-            coords_oxy[:, :, 4] - coords_oxy[:, :, 1],
-            coords_oxy[:, :, 2] - coords_oxy[:, :, 1],
-        )  # C-N' x C-CA
-
-        # rotate so that the new axis is in the (y,z) plane
-        cos = new_oz[:, :, 2] / (
-            (new_oz[:, :, 0] ** 2 + new_oz[:, :, 2] ** 2 + 1e-7).sqrt() + 1e-7
-        )
-        cos = torch.clamp(cos, -1 + eps, 1 - eps)
-        b = torch.arccos(cos)
-        mask = new_oz[:, :, 0] > 0
-        b[mask] = -b[mask]
-        R_y = self.R_y(rearrange(b, "b l -> (b l) 1"))
-        R_y = rearrange(R_y, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
-        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_y)
-
-        # rotate C-CA unit vector by 121° around the new axis and multiply by 1.24 to make it a C=O bond
-        R_z = self.R_z(rearrange(angle, "b l ... -> (b l) 1 ..."), vector=vector)
-        R_z = rearrange(R_z, "(b l) k j -> b l k j", b=coords.shape[0])
-        n = coords_oxy[:, :, [2]] - coords_oxy[:, :, [1]]
-        n = n / (torch.norm(n, dim=-1, keepdim=True) + 1e-7)
-        coords_O = torch.einsum("blkj,blij->blki", n, R_z) * 1.24
-        coords_oxy = torch.cat([coords_oxy[:, :, :3], coords_O], dim=-2)
-
-        # go back to global orientations
-        R_y = self.R_y(rearrange(-b, "b l -> (b l) 1"))
-        R_y = rearrange(R_y, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
-        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_y)
-        R_x = self.R_x(rearrange(-a, "b l -> (b l) 1"))
-        R_x = rearrange(R_x, "(b l) k j -> b l k j", b=coords_oxy.shape[0])
-        coords_oxy = torch.einsum("blkj,blij->blki", coords_oxy, R_x)
-        coords_oxy = coords_oxy + center
-
-        # remove updates in residues that neighbor a gap or a chain change
-        mask_ = ~(mask_exist[:, 1:].bool())
-        coords_oxy[mask_] = coords[:, :-1][mask_]
-        chain_change = torch.diff(chain_encoding, dim=1) != 0
-        coords_oxy[chain_change] = coords[:, :-1][chain_change]
-
-        # add the last aminoacid
-        coords = torch.cat([coords_oxy, coords[:, -1:]], dim=1)
-
+        # coords = Rotation.rotate_oxygens(coords, chain_encoding_all, mask)
         return coords
 
     def apply_encoder(
@@ -1059,13 +1038,11 @@ class ProtFill(nn.Module):
 
         if not self.diffusion:
             angles = rearrange(angles, "b n ... -> (b n) ...")
-            coords = self.rotate(
+            coords = Rotation.rotate(
                 coords,
                 angles,
                 chain_encoding_all,
                 mask,
-                quaternion=False,
-                vector=False,
             )
         return coords, angles
 
