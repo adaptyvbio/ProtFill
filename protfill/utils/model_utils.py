@@ -42,7 +42,7 @@ def metrics(
     return true_false.detach(), rmsd, pp.detach()
 
 
-def get_seq_loss(S, logits, mask, no_smoothing, ignore_unknown, weight=0.1):
+def get_seq_loss(S, logits, mask, no_smoothing, weight=0.1):
     """Negative log probabilities"""
     if logits is None:
         return torch.tensor(0)
@@ -50,16 +50,11 @@ def get_seq_loss(S, logits, mask, no_smoothing, ignore_unknown, weight=0.1):
     if not no_smoothing:
         S_onehot = S_onehot + weight / float(S_onehot.size(-1))
         S_onehot = S_onehot / S_onehot.sum(-1, keepdim=True)
-    if ignore_unknown:
-        mask_S = mask * (S != 0)
-        S_onehot = S_onehot[:, :, 1:]
-    else:
-        mask_S = mask
 
     loss = torch.nn.CrossEntropyLoss(reduction="none")(
         logits.transpose(-1, -2), S_onehot.transpose(-1, -2)
     )
-    loss = loss[(mask_S).bool()].sum() / mask_S.sum()
+    loss = loss[(mask).bool()].sum() / mask.sum()
     return loss
 
 

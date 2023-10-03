@@ -584,8 +584,6 @@ def run(args, trial=None):
                 else:
                     chain_M[chain_mask] = 1
                 model_args["chain_M"] = chain_M.to(args.device)
-            if args.num_predictions > 1 and args.decoder_type != "mpnn_auto":
-                model.train()
             for i in range(args.num_predictions // args.batch_size + 1):
                 b = min(args.batch_size, args.num_predictions - i * args.batch_size)
                 if b <= 0:
@@ -633,9 +631,9 @@ def run(args, trial=None):
                     )
                     seq_ = batch["S"][j].long()
                     if "seq" in out:
-                        seq_[mask_] = torch.argmax(out["seq"][j], dim=-1)[mask_].to(
+                        seq_[mask_] = torch.argmax(out["seq"][j][1:], dim=-1)[mask_].to(
                             seq_.device
-                        )
+                        ) - 1
                     predicted_protein_entry = ProteinEntry.from_arrays(
                         seq_,
                         coords_,
