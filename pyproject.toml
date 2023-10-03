@@ -18,6 +18,8 @@ dependencies = [
     "einops",
     "click",
     "torch<=1.13",
+    "torch_scatter",
+    "torch_geometric",
     "proteinflow>=2.2.1",
 ]
 
