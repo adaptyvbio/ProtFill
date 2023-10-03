@@ -18,7 +18,6 @@ from protfill.utils.model_utils import *
 import sys
 from copy import deepcopy
 from math import sqrt
-import wandb
 from itertools import product
 
 
@@ -987,7 +986,7 @@ def parse(command=None):
         "--message_passing",
         choices=[
             "gvp",
-            "gvp_orig",
+            "gvpe",
         ],
         default="mpnn_auto",
     )

@@ -6,8 +6,8 @@ import numpy as np
 from einops import repeat, rearrange
 from copy import deepcopy
 
-from protfill.layers.gvp import GVPOrig_Decoder, GVPOrig_Encoder
-from protfill.layers.gvp_new import GVP_Decoder, GVP_Encoder
+from protfill.layers.gvp import GVP_Decoder, GVP_Encoder
+from protfill.layers.gvpe import GVPe_Decoder, GVPe_Encoder
 from protfill.utils.model_utils import *
 from protfill.diffusion import Diffuser, get_orientations
 
@@ -323,12 +323,12 @@ class ProtFill(nn.Module):
     ):
         super(ProtFill, self).__init__()
         encoders = {
+            "gvpe": GVPe_Encoder,
             "gvp": GVP_Encoder,
-            "gvp_orig": GVPOrig_Encoder,
         }
         decoders = {
+            "gvpe": GVPe_Decoder,
             "gvp": GVP_Decoder,
-            "gvp_orig": GVPOrig_Decoder,
         }
 
         self.diffusion = (

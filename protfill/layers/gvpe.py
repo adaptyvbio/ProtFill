@@ -756,7 +756,7 @@ class GVPNet(nn.Module):
         return nodes_out, edges_out
 
 
-class GVP_Encoder(Encoder):
+class GVPe_Encoder(Encoder):
     def __init__(self, args) -> None:
         super().__init__()
         self.return_X = False
@@ -835,7 +835,7 @@ class GVP_Encoder(Encoder):
         )
 
 
-class GVP_Decoder(Decoder):
+class GVPe_Decoder(Decoder):
     def __init__(self, args) -> None:
         super().__init__()
         self.use_edge_vectors = True

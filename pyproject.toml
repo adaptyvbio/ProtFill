@@ -17,14 +17,12 @@ dependencies = [
     "yacs",
     "einops",
     "click",
+    "torch<=1.13",
     "proteinflow>=2.2.1",
-    "wandb",
-    "torchdyn==1.0.3",
 ]
 
 [project.scripts]
-ml4-try-run = "protfill.scripts.run:main"
-ml4-run = "protfill.scripts.run_and_log:main"
+protfill = "protfill.scripts.run:main"
 
 
 [tool.setuptools.packages]

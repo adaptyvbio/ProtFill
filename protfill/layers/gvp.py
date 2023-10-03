@@ -386,16 +386,11 @@ class GVPConvLayer(nn.Module):
         return x
     
 
-class GVPOrig_Encoder(Encoder):
+class GVP_Encoder(Encoder):
     def __init__(self, args) -> None:
         super().__init__()
-        self.return_X = args.decoder_type not in ["gvp", "gvp_orig"]
-        self.use_edge_vectors = args.use_edge_vectors
-        self.pass_edge_vectors = args.pass_edge_vectors
-        if self.return_X:
-            vector_dim = 1
-        else:
-            vector_dim = args.vector_dim
+        self.use_edge_vectors = True
+        vector_dim = args.vector_dim
 
         node_dims = (
             [(args.hidden_dim, args.vector_dim)]
@@ -414,7 +409,7 @@ class GVPOrig_Encoder(Encoder):
                 autoregressive=False, 
                 activations=(F.relu, torch.sigmoid), 
                 vector_gate=True,
-                norm_coors=args.norm_coors
+                norm_coors=False
             ) for nd, od in zip(node_dims[:-1], node_dims[1:])]
         )
 
@@ -451,12 +446,8 @@ class GVPOrig_Encoder(Encoder):
             )
         h, vectors = x
         b, l, n = E_idx.shape
-        h_V, _, upd = from_pyg(h, edge_attr[0], vectors, b, l, n)
+        h_V, _, X = from_pyg(h, edge_attr[0], vectors, b, l, n)
 
-        if self.return_X:
-            X = X + upd
-        else:
-            X = upd
         return (
             h_V,
             h_E,
@@ -466,19 +457,16 @@ class GVPOrig_Encoder(Encoder):
         )
 
 
-class GVPOrig_Decoder(Decoder):
+class GVP_Decoder(Decoder):
     def __init__(self, args) -> None:
         super().__init__()
         self.use_edge_vectors = args.use_edge_vectors
-        self.pass_edge_vectors = args.pass_edge_vectors
+        self.pass_edge_vectors = True
         self.edge_compute_func = args.edge_compute_func
         node_dims = [
             (args.hidden_dim, args.vector_dim) for _ in range(args.num_decoder_layers - 1)
         ] + [(args.hidden_dim, args.vector_dim)]
         node_dims = [(args.hidden_dim, args.vector_dim)] + node_dims
-
-        self.accept_X = args.encoder_type not in ["gvp", "gvp_orig"]
-
         self.decoder = nn.ModuleList(
             [GVPConvLayer(
                 nd, 
@@ -490,7 +478,7 @@ class GVPOrig_Decoder(Decoder):
                 autoregressive=False, 
                 activations=(F.relu, torch.sigmoid), 
                 vector_gate=True,
-                norm_coors=args.norm_coors
+                norm_coors=False
             ) for nd, od in zip(node_dims[:-1], node_dims[1:])]
         )
         linear = []
@@ -523,16 +511,10 @@ class GVPOrig_Decoder(Decoder):
         global_context,
         coords,
     ):
-        if self.accept_X:
-            vectors, edge_vectors = get_vectors(
-                X, mask, E_idx, edge=self.use_edge_vectors
-            )
-        else:
-            vectors = X
-            if not self.pass_edge_vectors:
-                _, edge_vectors = get_vectors(
-                    coords, mask, E_idx, edge=self.use_edge_vectors
-                )
+        vectors = X
+        _, edge_vectors = get_vectors(
+            coords, mask, E_idx, edge=self.use_edge_vectors
+        )
 
         num_vectors = None
         if self.use_edge_vectors:
@@ -540,10 +522,6 @@ class GVPOrig_Decoder(Decoder):
             edge = torch.cat([h_E, rearrange(edge_vectors, "b l k n d -> b l k (n d)")], dim=-1)
         else:
             edge = h_E
-        if isinstance(edge, tuple):
-            h_E, edge_vectors = edge
-            num_vectors = edge_vectors.shape[-2]
-            edge = torch.cat([h_E, rearrange(edge_vectors, "b l k n d -> b l k (n d)")], dim=-1)
         h, edge_attr, edge_index, vectors, batch, _ = to_pyg(h_V, edge, E_idx, mask, vectors)
         if num_vectors is not None:
             edge_vectors = edge_attr[..., -num_vectors * 3:]
