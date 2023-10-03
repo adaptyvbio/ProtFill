@@ -19,6 +19,8 @@ import sys
 from copy import deepcopy
 from math import sqrt
 from itertools import product
+from datetime import datetime
+import tempfile
 
 
 def get_mse_loss(att_mse, mask):
@@ -251,7 +253,6 @@ def compute_loss(model_args, args, model, epoch):
                     out["seq"],
                     mask_for_loss,
                     no_smoothing=False,
-                    ignore_unknown=False,
                 )
         if "coords" in out and not model.diffusion:
             loss_upd = get_coords_loss(
@@ -348,8 +349,8 @@ def get_prediction(model, model_args, args, chain_dict=None):
     model_args["X"][~model_args["mask"].bool()] = 0.0
 
     if args.diffusion and not model.training:
-        if args.predict_file:
-            entry_name = os.path.basename(args.predict_file).split(".")[0]
+        if args.redesign_file:
+            entry_name = os.path.basename(args.redesign_file).split(".")[0]
             save_path = os.path.join("output", entry_name)
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
@@ -429,10 +430,8 @@ def run(args, trial=None):
         if not os.path.exists(base_folder + subfolder):
             os.makedirs(base_folder + subfolder)
 
-    PATH = args.load_experiment or ""
-
     logfile = base_folder + "log.txt"
-    if not PATH:
+    if args.load_checkpoint is None:
         with open(logfile, "w") as f:
             f.write("Epoch\tTrain\tValidation\n")
 
@@ -485,10 +484,15 @@ def run(args, trial=None):
         )
         test_set.set_cdr(args.test_cdr)
         test_loader = ProteinLoader(test_set, **LOAD_PARAM)
-    elif args.predict_file is not None:
+    elif args.redesign_file is not None:
+        if args.redesign_file.endswith(".pdb"):
+            file_path = tempfile.NamedTemporaryFile(delete=False).name
+            ProteinEntry.from_pdb(args.redesign_file).to_pickle(file_path)
+        else:
+            file_path = args.redesign_file
         test_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, "test"),
-            debug_file_path=args.predict_file,
+            debug_file_path=file_path,
             force_binding_sites_frac=args.val_force_binding_sites_frac,
             **DATA_PARAM,
         )
@@ -524,8 +528,6 @@ def run(args, trial=None):
         hidden_dim=args.hidden_dim,
         embedding_dim=args.hidden_dim,
     )
-    # torch.set_float32_matmul_precision('high')
-    # model = torch.compile(model)
     if torch.cuda.device_count() > 1:
         print("Let's use", torch.cuda.device_count(), "GPUs!")
         model = nn.DataParallel(model)
@@ -534,8 +536,8 @@ def run(args, trial=None):
     params = sum([np.prod(p.size()) for p in model_parameters])
     print(">>> Number of parameters in the model: ", params)
 
-    if PATH:
-        checkpoint = torch.load(PATH)
+    if args.load_checkpoint is not None:
+        checkpoint = torch.load(args.load_checkpoint)
         total_step = checkpoint["step"]  # write total_step from the checkpoint
         epoch = checkpoint["epoch"]  # write epoch from the checkpoint
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -545,28 +547,28 @@ def run(args, trial=None):
 
     optimizer = get_std_opt(filter(lambda p: p.requires_grad, model.parameters()), args.hidden_dim, total_step, lr=None)
 
-    if PATH:
+    if args.load_checkpoint is not None:
         try:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         except ValueError as e:
             warnings.warn(str(e))
 
-    if args.predict_file is not None:
+    if args.redesign_file is not None:
         print("\nGENERATING")
         model.eval()
         with torch.no_grad():
             batch = next(iter(test_loader))
             model_args = get_model_args(batch, args.device)
-            if args.predict_positions is not None:
+            if args.redesign_positions is not None:
                 if batch["masked_res"].shape[0] != 1:
                     raise NotImplementedError
-                if ":" in args.predict_positions:
-                    chain, positions = args.predict_positions.split(":")
+                if ":" in args.redesign_positions:
+                    chain, positions = args.redesign_positions.split(":")
                     positions = positions.split(",")
                     if positions[0] == "":
                         positions = []
                 else:
-                    chain, positions = args.predict_positions, []
+                    chain, positions = args.redesign_positions, []
                 chain_M = torch.zeros_like(batch["masked_res"])
                 chain_mask = (
                     batch["chain_encoding_all"] == batch["chain_dict"][0][chain]
@@ -584,8 +586,9 @@ def run(args, trial=None):
                 else:
                     chain_M[chain_mask] = 1
                 model_args["chain_M"] = chain_M.to(args.device)
-            for i in range(args.num_predictions // args.batch_size + 1):
-                b = min(args.batch_size, args.num_predictions - i * args.batch_size)
+            num_predictions = 1
+            for i in range(num_predictions // args.batch_size + 1):
+                b = min(args.batch_size, num_predictions - i * args.batch_size)
                 if b <= 0:
                     continue
                 m_args = {}
@@ -605,24 +608,12 @@ def run(args, trial=None):
                                 m_args[k][kk] = None
 
                 output, mask_for_loss, *_ = get_prediction(
-                    model, m_args, args, chain_dict=batch["chain_dict"], barycenter=args.barycenter
+                    model, m_args, args, chain_dict=batch["chain_dict"]
                 )
                 out = output[-1]
-                true_protein_entry = ProteinEntry.from_arrays(
-                    batch["S"][0],
-                    batch["X"][0],
-                    batch["mask"][0],
-                    batch["chain_dict"][0],
-                    batch["chain_encoding_all"][0],
-                    mask_for_loss[0],
-                    batch.get("cdr", [None for _ in range(b)])[0],
-                )
-                basename = os.path.basename(args.predict_file)
+                basename = os.path.basename(args.redesign_file)
                 if not os.path.exists(os.path.join("output", basename.split(".")[0])):
                     os.makedirs(os.path.join("output", basename.split(".")[0]))
-                true_protein_entry.to_pickle(
-                    os.path.join("output", basename.split(".")[0], f"true.pickle")
-                )
                 for j in range(b):
                     mask_ = mask_for_loss[j].bool()
                     coords_ = batch["X"][j].float()
@@ -631,9 +622,9 @@ def run(args, trial=None):
                     )
                     seq_ = batch["S"][j].long()
                     if "seq" in out:
-                        seq_[mask_] = torch.argmax(out["seq"][j][1:], dim=-1)[mask_].to(
+                        seq_[mask_] = torch.argmax(out["seq"][j][..., 1:], dim=-1)[mask_].to(
                             seq_.device
-                        ) - 1
+                        ) + 1
                     predicted_protein_entry = ProteinEntry.from_arrays(
                         seq_,
                         coords_,
@@ -643,12 +634,21 @@ def run(args, trial=None):
                         mask_for_loss[j],
                         batch.get("cdr", [None for _ in range(b)])[j],
                     )
-                    filepath = os.path.join(
+                    current_time = datetime.now().strftime("%Y%m%d_%H:%M:%S")
+                    pickle_filepath = os.path.join(
                         "output",
                         basename.split(".")[0],
-                        f"predicted_{i * args.batch_size + j}.pickle",
+                        # f"predicted_{i * args.batch_size + j}.pickle",
+                        f"predicted_{current_time}.pickle",
                     )
-                    predicted_protein_entry.to_pickle(filepath)
+                    pdb_filepath = os.path.join(
+                        "output",
+                        basename.split(".")[0],
+                        # f"predicted_{i * args.batch_size + j}.pdb",
+                        f"predicted_{current_time}.pdb",
+                    )
+                    predicted_protein_entry.to_pickle(pickle_filepath)
+                    predicted_protein_entry.to_pdb(pdb_filepath)
 
     elif args.test:
         print("\nTESTING")
@@ -660,10 +660,7 @@ def run(args, trial=None):
             valid_rmsd_full = 0.0
             valid_pp = 0.0
             valid_losses = defaultdict(float)
-            if args.skip_tqdm:
-                loader = test_loader
-            else:
-                loader = tqdm(test_loader)
+            loader = tqdm(test_loader)
             for batch in loader:
                 (
                     loss,
@@ -898,8 +895,6 @@ def run(args, trial=None):
                     checkpoint_filename,
                 )
 
-        if args.log_wandb_name is not None:
-            wandb.finish()
         return best_res
 
 
@@ -970,11 +965,11 @@ def parse(command=None):
         default="gvpe",
     )
     argparser.add_argument(
-        "--predict_file",
+        "--redesign_file",
         help="Predict the given file",
     )
     argparser.add_argument(
-        "--predict_positions",
+        "--redesign_positions",
         help="Mask specific positions in the given file (only with predict_file); e.g. A, A:5-10,20,30-40 (fasta-based numbering)",
     )
     argparser.add_argument(
@@ -1016,6 +1011,12 @@ def parse(command=None):
         action="store_true",
         help="Add noise to coordinates instead of replacing them",
     )
+    argparser.add_argument(
+        "--load_checkpoint",
+        type=str,
+        default=None,
+        help="path for previous model weights, e.g. file.pt",
+    )
 
     argparser.add_argument(
         "--debug",
@@ -1042,7 +1043,7 @@ def parse(command=None):
 
     args.no_mixed_precision = True
     args.test = args.easy_test or args.hard_test or args.validate
-    args.patch_around_mask = not args.predict_file
+    args.patch_around_mask = not args.redesign_file
     args.noise_std = 1 if args.diffusion else 0.1
 
     args.use_edge_vectors = True

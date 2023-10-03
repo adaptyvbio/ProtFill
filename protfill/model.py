@@ -920,7 +920,6 @@ class ProtFill(nn.Module):
         chain_M,
         residue_idx,
         chain_encoding_all,
-        save_path=None,
         **kwargs,
     ):
         seq = deepcopy(S)
@@ -942,17 +941,6 @@ class ProtFill(nn.Module):
         orientations, _, local_coords = get_orientations(coords)
         coords_ca = coords[:, :, 2, :]
         chain_M_bool = chain_M.bool()
-        if save_path is not None:
-            self._save_step(
-                coords[0],
-                seq[0],
-                chain_M[0],
-                mask[0],
-                chain_encoding_all[0],
-                kwargs["chain_dict"][0],
-                save_path,
-                0,
-            )
     
         for t in list(range(1, self.num_diffusion_steps + 1))[::-1]:
             timestep = t * torch.ones(X.shape[0], dtype=torch.long)
@@ -1008,17 +996,6 @@ class ProtFill(nn.Module):
                     mask,
                 )
                 coords[chain_M_bool] = coords_new[chain_M_bool]
-            if save_path is not None:
-                self._save_step(
-                    coords[0],
-                    seq[0],
-                    chain_M[0],
-                    mask[0],
-                    chain_encoding_all[0],
-                    kwargs["chain_dict"][0],
-                    save_path,
-                    self.num_diffusion_steps - t + 1,
-                )
         out = {}
         if self.predict_sequence:
             out["seq"] = torch.log(distribution + 1e-7)
