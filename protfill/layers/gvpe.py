@@ -723,7 +723,6 @@ class GVPNet(nn.Module):
                     norm_divide=norm_divide,
                     update_edges=update_edges,
                     use_pna=use_pna,
-                    use_attention=use_attention,
                     graph_context_dim=graph_context_dim,
                     use_node_dropout=use_node_dropout,
                     less_dropout=less_dropout,

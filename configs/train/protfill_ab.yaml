@@ -1,0 +1,13 @@
+features_path: ./data/tmp_features
+output_path: ./exp
+num_epochs: 200
+batch_size: 8
+max_protein_length: 2000
+device: cuda
+n_cycles: 3
+message_passing: gvpe
+linear_layers_num: 0
+alternative_noising: false
+dropout: 0.2
+noise_std: 0.1
+diffusion: false

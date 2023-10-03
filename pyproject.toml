@@ -20,11 +20,12 @@ dependencies = [
     "torch<=1.13",
     "torch_scatter",
     "torch_geometric",
+    "pyyaml",
     "proteinflow>=2.2.1",
 ]
 
 [project.scripts]
-protfill = "protfill.scripts.run:main"
+protfill = "protfill.scripts.run_config:main"
 
 
 [tool.setuptools.packages]

@@ -446,7 +446,7 @@ def run(args, trial=None):
         "features_folder": args.features_path,
         "max_length": args.max_protein_length,
         "rewrite": True,
-        "debug": args.debug,
+        "debug": False,
 
         "min_cdr_length": 3,
         "lower_limit": args.lower_masked_limit,
@@ -897,10 +897,7 @@ def run(args, trial=None):
 
         return best_res
 
-
-def parse(command=None):
-    if command is not None:
-        sys.argv = command.split()
+def make_parser():
     argparser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
@@ -936,7 +933,7 @@ def parse(command=None):
         help="the mode for loading the model weights",
     )
     argparser.add_argument(
-        "--num_epochs", type=int, default=100, help="number of epochs to train for"
+        "--num_epochs", type=int, default=200, help="number of epochs to train for"
     )
     argparser.add_argument(
         "--batch_size", type=int, default=8, help="number of tokens for one batch"
@@ -1017,10 +1014,11 @@ def parse(command=None):
         default=None,
         help="path for previous model weights, e.g. file.pt",
     )
-
     argparser.add_argument(
-        "--debug",
-        action="store_true",
+        "--noise_std",
+        type=float,
+        default=0.1,
+        help="standard deviation of the gaussian noise (added to the backbone with alternative noising or used as initialization)",
     )
 
     argparser.add_argument(
@@ -1038,13 +1036,18 @@ def parse(command=None):
         action="store_true",
         help="Evaluate on the validation set instead of training (make sure to set previous_checkpoint)",
     )
+    return argparser
+
+def parse(command=None, argparser=None):
+    if command is not None:
+        sys.argv = command.split()
+    argparser = make_parser() if argparser is None else argparser
 
     args = argparser.parse_args()
 
     args.no_mixed_precision = True
     args.test = args.easy_test or args.hard_test or args.validate
     args.patch_around_mask = not args.redesign_file
-    args.noise_std = 1 if args.diffusion else 0.1
 
     args.use_edge_vectors = True
     args.no_oxygen_features = True

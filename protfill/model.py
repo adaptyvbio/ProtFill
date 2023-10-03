@@ -583,7 +583,7 @@ class ProtFill(nn.Module):
     def random_rotation(self, X, chain_labels, lim=torch.pi):
         n = chain_labels.sum()
         angles = torch.randn((n, 3)) * lim - lim / 2
-        R, _ = self.rotation_matrices_from_angles(angles)
+        R = Rotation.rotation_matrices_from_angles(angles)
         R = R.to(X.device)
         mean = X[chain_labels].mean(-2).unsqueeze(-2)
         out = torch.einsum("ndj,naj->nad", R, X[chain_labels] - mean) + mean
