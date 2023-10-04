@@ -454,7 +454,6 @@ def run(args, trial=None):
         "features_folder": args.features_path,
         "max_length": args.max_protein_length,
         "rewrite": True,
-        "debug": args.debug,
 
         "min_cdr_length": 3,
         "lower_limit": args.lower_masked_limit,

@@ -1,6 +1,8 @@
 # ProtFill
 `ProtFill` is an inpainting protein sequence and structure co-design model that works on antibodies as well as other proteins. 
 
+Our model uses custom GVPe message passing layers, which are a modification of GVP with edge updates.
+
 ## Installation
 ```bash
 cd protfill

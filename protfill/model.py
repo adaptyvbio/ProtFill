@@ -3,7 +3,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
-import esm
 from einops import repeat, rearrange
 from copy import deepcopy
 import os
@@ -409,7 +408,6 @@ class ProtFill(nn.Module):
             not self.use_sequence_in_encoder or double_sequence_features
         )
         self.probability_mode = self.seq_init_mode in [
-            "esm_probabilities",
             "uniform_probabilities",
         ]
         self.force_update = False
@@ -458,7 +456,6 @@ class ProtFill(nn.Module):
                 "dihedral": 4,
                 "topological": 9,
                 "mask": 1,
-                "esm": 320,
                 "secondary_structure": 3,
             }
             d_sequence = {"chemical": 6, "chem_topological": 105}
@@ -490,39 +487,6 @@ class ProtFill(nn.Module):
                 self.W_v_seq = nn.Linear(
                     input_f_seq + embedding_dim, hidden_dim, bias=True
                 )
-        if "esm" in self.node_features_type.split("+") or "esm" in self.seq_init_mode:
-            self.esm, self.alphabet = esm.pretrained.esm2_t30_150M_UR50D()
-            self.batch_converter = self.alphabet.get_batch_converter()
-            self.W_v_esm = nn.Linear(320, hidden_dim)
-            tok_to_idx = self.alphabet.tok_to_idx
-            idx_to_tok = {tok_to_idx[k]: k for k in tok_to_idx.keys()}
-            for k in idx_to_tok.keys():
-                if len(idx_to_tok[k]) > 1:
-                    idx_to_tok[k] = "X"
-            self.idx_esm_to_idx_mpnn = {
-                k: REVERSE_ALPHABET_DICT[idx_to_tok[k]]
-                if idx_to_tok[k] in REVERSE_ALPHABET_DICT.keys()
-                else 0
-                for k in idx_to_tok.keys()
-            }
-            idx_mpnn_to_idx_esm = {
-                self.idx_esm_to_idx_mpnn[k]: k
-                for k in self.idx_esm_to_idx_mpnn.keys()
-                if self.idx_esm_to_idx_mpnn[k] != 0
-            }
-            self.idx_selector = torch.LongTensor(
-                [
-                    idx_mpnn_to_idx_esm[k]
-                    for k in sorted(list(idx_mpnn_to_idx_esm.keys()))
-                ]
-            )
-            self.idx_for_unknown = torch.LongTensor(
-                [
-                    k
-                    for k in range(len(list(self.idx_esm_to_idx_mpnn.keys())))
-                    if k not in self.idx_selector
-                ]
-            )
 
         self.separate_modules_num = separate_modules_num
         self.encoders = nn.ModuleList([encoders[encoder_type](args)])
@@ -803,63 +767,6 @@ class ProtFill(nn.Module):
         ]
         return idxs
 
-    def prepare_seqs_for_esm(self, seqs, idxs):
-        seqs = [
-            "".join([ALPHABET_DICT[int(s)] for s in seq]) for k, seq in enumerate(seqs)
-        ]
-        max_len = len(seqs[0])
-        for k in range(len(seqs)):
-            for idx in idxs[k][-2::-1]:
-                seqs[k] = seqs[k][: idx + 1] + "<eos><cls>" + seqs[k][idx + 1 :]
-            seqs[k] = seqs[k][: len(seqs[k]) - max_len + idxs[k][-1] + 1] + "<pad>" * (
-                max_len - idxs[k][-1] - 1
-            )
-            seqs[k] = (str(k), seqs[k].replace("X", "<mask>"))
-        return seqs
-
-    def retrieve_outputs_from_esm(self, outputs, idxs):
-        idxs = [
-            [0]
-            + [idx + 2 * (k + 1) for k, idx in enumerate(idxs[l][:-1])]
-            + [1 + idx + 2 * (k + 1) for k, idx in enumerate(idxs[l][:-1])]
-            + [outputs.shape[1] - 1]
-            for l in range(len(idxs))
-        ]
-        idxs = [F.one_hot(torch.LongTensor(idx)).sum(dim=0) for idx in idxs]
-        out = [outputs[k, ~idxs[k].bool()] for k in range(len(idxs))]
-        min_len = np.min([len(o) for o in out])
-        out = torch.stack([out[k][:min_len] for k in range(len(out))])
-        return out
-
-    def run_esm(self, S, mask, residue_idx, return_logits=False):
-        device = S.device
-        self.esm.eval()
-        masked_seq = S.detach().clone()
-        masked_seq[mask == 0] = 0
-        idxs = self.find_chains_idx(residue_idx)
-        seqs = self.prepare_seqs_for_esm(masked_seq, idxs)
-        _, _, batch_tokens = self.batch_converter(seqs)
-        batch_tokens = batch_tokens.to(device)
-        with torch.no_grad():
-            results = self.esm(batch_tokens, repr_layers=[6], return_contacts=False)
-
-        if return_logits:
-            return self.retrieve_outputs_from_esm(results["logits"], idxs)
-        else:
-            return self.retrieve_outputs_from_esm(results["representations"][6], idxs)
-
-    def esm_probabilities(self, S, mask, residue_idx):
-        logits = self.run_esm(S, mask, residue_idx, return_logits=True)
-        logits_mpnn = logits[:, :, self.idx_selector]
-        logits_unknown = torch.sum(
-            logits[:, :, self.idx_for_unknown], dim=-1, keepdim=True
-        )
-        logits_mpnn = torch.cat([logits_unknown, logits_mpnn], dim=-1)
-        return F.softmax(logits_mpnn, dim=-1)
-
-    def esm_one_hot(self, S, mask, residue_idx):
-        return self.esm_probabilities(S, mask, residue_idx).argmax(dim=-1)
-
     def random_unit_vectors_like(self, tensor):
         # rand_vecs = torch.randn_like(tensor)
         # norms = torch.norm(rand_vecs, dim=-1, keepdim=True)
@@ -894,16 +801,6 @@ class ProtFill(nn.Module):
             seq[chain_M.bool()] = torch.randint_like(
                 seq[chain_M.bool()], low=1, high=21
             )
-        elif self.seq_init_mode == "esm_one_hot":
-            seq[chain_M.bool()] = self.esm_one_hot(
-                seq, (1 - chain_M) * mask, residue_idx
-            )[chain_M.bool()]
-        elif self.seq_init_mode == "esm_probabilities":
-            esm_probabilities = self.esm_probabilities(
-                seq, (1 - chain_M) * mask, residue_idx
-            )
-            seq = F.one_hot(seq, num_classes=len(ALPHABET)).float()
-            seq[chain_M.bool()] = esm_probabilities[chain_M.bool()]
         elif self.seq_init_mode == "uniform_probabilities":
             seq = F.one_hot(seq, num_classes=len(ALPHABET)).float()
             seq[chain_M.bool()] = 1 / 21
@@ -1022,14 +919,6 @@ class ProtFill(nn.Module):
         if self.seq_features:
             h_S = torch.cat([V_sequence, h_S], -1)
             h_S = self.W_v_seq(h_S)
-        if "esm" in self.node_features_type:
-            if V_structure is not None:
-                V_structure = torch.cat(
-                    [V_structure, self.run_esm(seq, mask, residue_idx)], -1
-                )
-            else:
-                V_structure = self.run_esm(seq, mask, residue_idx)
-
         if self.use_sequence_in_encoder:
             if self.str_features:
                 V_structure = torch.cat([V_structure, h_S], -1)
