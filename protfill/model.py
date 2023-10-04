@@ -325,7 +325,6 @@ class ProtFill(nn.Module):
             "gvpe": GVPe_Decoder,
             "gvp": GVP_Decoder,
         }
-        vector_update_decoders = ["gvp", "gvpe"]
         self.vector_encoders = ["gvp", "gvpe"]
         self.vector_decoders = ["gvp", "gvpe"]
         # self.vector_encoders = []

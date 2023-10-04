@@ -13,7 +13,6 @@ from protfill.model import (
     ProtFill,
 )
 from tqdm import tqdm
-import optuna
 from protfill.utils.model_utils import *
 import sys
 from copy import deepcopy
@@ -885,10 +884,6 @@ def run(args, trial=None):
                     },
                     checkpoint_filename_best,
                 )
-            if trial is not None:  # optuna trial for hyperparameter optimization
-                trial.report(best_res, e)
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
 
             if (e + 1) % args.save_model_every_n_epochs == 0:
                 checkpoint_filename = (
