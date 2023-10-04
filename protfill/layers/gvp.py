@@ -414,7 +414,7 @@ class GVP_Encoder(Encoder):
                 autoregressive=False, 
                 activations=(F.relu, torch.sigmoid), 
                 vector_gate=True,
-                norm_coors=args.norm_coors
+                norm_coors=False
             ) for nd, od in zip(node_dims[:-1], node_dims[1:])]
         )
 
@@ -490,7 +490,7 @@ class GVP_Decoder(Decoder):
                 autoregressive=False, 
                 activations=(F.relu, torch.sigmoid), 
                 vector_gate=True,
-                norm_coors=args.norm_coors
+                norm_coors=False
             ) for nd, od in zip(node_dims[:-1], node_dims[1:])]
         )
         linear = []

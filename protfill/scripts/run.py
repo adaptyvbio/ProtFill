@@ -1043,6 +1043,8 @@ def parse(command=None, argparser=None):
     args.no_mixed_precision = True
     if args.easy_test or args.validate or args.hard_test:
         args.test = True
+    else:
+        args.test = False
 
     args.scale_timestep = True
     args.update_edges = True
