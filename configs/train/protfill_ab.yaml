@@ -11,3 +11,4 @@ dropout: 0.2
 noise_std: 0.1
 diffusion: false
 message_passing: gvpe
+initial_patch_size: 128
