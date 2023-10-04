@@ -10,7 +10,7 @@ import random
 from proteinflow import ProteinLoader, ProteinDataset
 from proteinflow.data import ProteinEntry
 from protfill.model import (
-    ProteinModel,
+    ProtFill,
 )
 from tqdm import tqdm
 import optuna
@@ -18,7 +18,6 @@ from protfill.utils.model_utils import *
 import sys
 from copy import deepcopy
 from math import sqrt
-import wandb
 from itertools import product
 
 
@@ -183,46 +182,6 @@ def print_invariance(old_coords, old_seq, model, model_args, transform=None, ato
         # mask = ~torch.isclose(new_coords, base_coords, atol=atol)
 
 
-def test_invariance(model, model_args, args):
-    model.eval()
-    model_args["chain_M"][0, 30] = 1
-    torch.manual_seed(0)
-    output = model(**model_args, test=args.test)
-    old_seq, old_coords = None, None
-    if "seq" in output[0]:
-        old_seq = output[0]["seq"].detach().clone()
-    if "coords" in output[0]:
-        old_coords = output[0]["coords"].detach().clone()
-    old_X = model_args["X"].detach().clone()
-    print("\n\nTESTING INVARIANCE:")
-    print("Repeat:")
-    print_invariance(old_coords, old_seq, model, model_args)
-    print("Translation:")
-    print_invariance(old_coords, old_seq, model, model_args, transform=lambda x: x + 1)
-    print("Rotation:")
-    a = torch.tensor(torch.pi / 3)
-    R = torch.tensor(
-        [[1, 0, 0], [0, torch.cos(a), -torch.sin(a)], [0, torch.sin(a), torch.cos(a)]]
-    ).to(old_X.device)
-    print_invariance(
-        old_coords,
-        old_seq,
-        model,
-        model_args,
-        transform=lambda x: torch.einsum("ijkl,ml->ijkm", x, R),
-    )
-    print("Reflection:")
-    print_invariance(old_coords, old_seq, model, model_args, transform=lambda x: -x)
-    print("Change:")
-    print_invariance(
-        old_coords,
-        old_seq,
-        model,
-        model_args,
-        transform=lambda x: torch.einsum("ijkl,ml->ijkm", x, R + 1),
-    )
-
-
 def initialize_sequence(seq, chain_M, seq_init_mode):
     if seq_init_mode == "zeros":
         seq[chain_M.bool()] = 0
@@ -237,7 +196,7 @@ def compute_loss(model_args, args, model, epoch):
     output, mask_for_loss, S, X = get_prediction(model, model_args, args, barycenter=args.barycenter)
 
     losses = defaultdict(lambda: torch.tensor(0.0).to(args.device))
-    v_w = 0.0 if epoch < args.violation_loss_epoch else args.violation_loss_weight
+    v_w = 0.0 if epoch < args.violation_loss_start_epoch else args.violation_loss_weight
     for out in output:
         if "seq" in out:
             if model.diffusion and model.training:
@@ -253,8 +212,8 @@ def compute_loss(model_args, args, model, epoch):
                     S,
                     out["seq"],
                     mask_for_loss,
-                    no_smoothing=args.no_smoothing,
                     ignore_unknown=args.ignore_unknown_residues,
+                    no_smoothing=False
                 )
         if "coords" in out and not model.diffusion:
             loss_upd = get_coords_loss(
@@ -383,10 +342,6 @@ def get_prediction(model, model_args, args, chain_dict=None, barycenter=False):
     if args.ignore_unknown_residues:
         mask_for_loss *= S != 0
 
-    if args.test_invariance:
-        test_invariance(model, model_args, args)
-        raise RuntimeError("Test over")
-
     # if args.diffusion:
     if barycenter:
         mu = []
@@ -403,22 +358,19 @@ def get_prediction(model, model_args, args, chain_dict=None, barycenter=False):
     model_args["X"][~model_args["mask"].bool()] = 0.0
 
     if args.diffusion and not model.training:
-        if args.skip_diffuse:
-            output = model(**model_args, test=args.test)
+        if args.redesign_file:
+            entry_name = os.path.basename(args.redesign_file).split(".")[0]
+            save_path = os.path.join("output", entry_name)
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
         else:
-            if args.predict_file:
-                entry_name = os.path.basename(args.predict_file).split(".")[0]
-                save_path = os.path.join("output", entry_name)
-                if not os.path.exists(save_path):
-                    os.makedirs(save_path)
-            else:
-                save_path = None
-            output = model.diffuse(
-                **deepcopy(model_args),
-                test=True,
-                save_path=save_path,
-                chain_dict=chain_dict,
-            )
+            save_path = None
+        output = model.diffuse(
+            **deepcopy(model_args),
+            test=True,
+            save_path=save_path,
+            chain_dict=chain_dict,
+        )
     else:
         output = model(**model_args, test=args.test)
 
@@ -471,13 +423,6 @@ def get_loss(batch, optimizer, args, model, epoch):
 
 
 def run(args, trial=None):
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-        np.random.seed(args.seed)
-        random.seed(args.seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
         
     scaler = torch.cuda.amp.GradScaler()
 
@@ -513,70 +458,24 @@ def run(args, trial=None):
         "max_length": args.max_protein_length,
         "rewrite": True,
         "debug": args.debug,
-        "load_to_ram": args.load_to_ram,
-        "interpolate": args.interpolate,
-        "node_features_type": args.node_features,
 
         "min_cdr_length": 3,
         "lower_limit": args.lower_masked_limit,
         "upper_limit": args.upper_masked_limit,
-        "mask_whole_chains": args.mask_whole_chains,
-        "mask_frac": args.masking_probability,
         "mask_all_cdrs": args.mask_all_cdrs,
         "patch_around_mask": args.patch_around_mask,
         "initial_patch_size": args.initial_patch_size,
-        "mask_sequential": args.mask_sequential,
     }
 
-    if not os.path.exists(os.path.join(args.dataset_path, "splits_dict")):
-        args.skip_clustering = True
 
-    training_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "train.pickle")
-    )
-    validation_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
-    )
-    test_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "test.pickle")
-    )
-    excluded_dict = (
-        None
-        if args.skip_clustering
-        else os.path.join(args.dataset_path, "splits_dict", "excluded.pickle")
-    )
+    training_dict = os.path.join(args.dataset_path, "splits_dict", "train.pickle")
+    validation_dict = os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
+    test_dict = os.path.join(args.dataset_path, "splits_dict", "test.pickle")
+    excluded_dict = os.path.join(args.dataset_path, "splits_dict", "excluded.pickle")
 
     print("\nDATA LOADING")
-    if args.tiny_dataset:
-        use_frac = 0.02
-    elif args.small_dataset:
-        use_frac = 0.1
-    elif args.half_dataset:
-        use_frac = 0.5
-    else:
-        use_frac = 1.0
-    if args.debug_file:
-        train_set = ProteinDataset(
-            dataset_folder=os.path.join(args.dataset_path, "train"),
-            debug_file_path=args.debug_file,
-            force_binding_sites_frac=args.train_force_binding_sites_frac,
-            **DATA_PARAM,
-        )
-        train_loader = ProteinLoader(train_set, **LOAD_PARAM)
-        valid_set = ProteinDataset(
-            dataset_folder=os.path.join(args.dataset_path, "valid"),
-            debug_file_path=args.debug_file,
-            force_binding_sites_frac=args.val_force_binding_sites_frac,
-            **DATA_PARAM,
-        )
-        valid_loader = ProteinLoader(valid_set, **LOAD_PARAM)
-    elif args.test:
+    use_frac = 1.0
+    if args.test:
         if args.test_excluded:
             folder, clustering_dict_path = "excluded", excluded_dict
         elif args.validate:
@@ -592,10 +491,10 @@ def run(args, trial=None):
         )
         test_set.set_cdr(args.test_cdr)
         test_loader = ProteinLoader(test_set, **LOAD_PARAM)
-    elif args.predict_file is not None:
+    elif args.redesign_file is not None:
         test_set = ProteinDataset(
             dataset_folder=os.path.join(args.dataset_path, "test"),
-            debug_file_path=args.predict_file,
+            debug_file_path=args.redesign_file,
             force_binding_sites_frac=args.val_force_binding_sites_frac,
             **DATA_PARAM,
         )
@@ -621,27 +520,22 @@ def run(args, trial=None):
         )
         valid_loader = ProteinLoader(valid_set, **LOAD_PARAM)
 
-    model = ProteinModel(
+    model = ProtFill(
         args,
         encoder_type=args.encoder_type,
         decoder_type=args.decoder_type,
         k_neighbors=args.num_neighbors,
-        augment_eps=args.backbone_noise,
         embedding_dim=args.embedding_dim,
         ignore_unknown=args.ignore_unknown_residues,
-        node_features_type=args.node_features,
+        node_features_type=None,
         predict_structure=args.predict_structure,
-        noise_unknown=args.noise_unknown,
+        noise_std=args.noise_std,
         n_cycles=args.n_cycles,
         no_sequence_in_encoder=args.no_sequence_in_encoder,
-        cycle_over_embedding=args.cycle_over_embedding,
         seq_init_mode=args.seq_init_mode,
         double_sequence_features=args.double_sequence_features,
         hidden_dim=args.hidden_dim,
         separate_modules_num=args.separate_modules_num,
-        only_cycle_over_decoder=args.only_cycle_over_decoder,
-        random_connections_frac=args.random_connections_frac,
-        skip_weight_init=args.skip_weight_init,
         predict_angles=args.predict_angles,
         co_design=args.co_design,
     )
@@ -650,9 +544,6 @@ def run(args, trial=None):
     if torch.cuda.device_count() > 1:
         print("Let's use", torch.cuda.device_count(), "GPUs!")
         model = nn.DataParallel(model)
-    if args.log_wandb_name is not None:
-        wandb.init(project="ML4", config=args, name=args.log_wandb_name, entity="adaptyvbio")
-        wandb.watch(model)
     model.to(args.device)
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
@@ -667,18 +558,6 @@ def run(args, trial=None):
         total_step = 0
         epoch = 0
 
-    if args.freeze_structure and args.co_design == "seq":
-        for name, param in model.named_parameters():
-            name_split = name.split(".")
-            if (
-                name_split[0] in ["encoders", "decoders"]
-                and int(name_split[1]) % 2 == 1
-            ):
-                continue
-            if "W_out" in name:
-                continue
-            param.requires_grad = False
-
     optimizer = get_std_opt(filter(lambda p: p.requires_grad, model.parameters()), args.hidden_dim, total_step, lr=args.lr)
 
     if PATH:
@@ -687,22 +566,22 @@ def run(args, trial=None):
         except ValueError as e:
             warnings.warn(str(e))
 
-    if args.predict_file is not None:
+    if args.redesign_file is not None:
         print("\nGENERATING")
         model.eval()
         with torch.no_grad():
             batch = next(iter(test_loader))
             model_args = get_model_args(batch, args.device)
-            if args.predict_positions is not None:
+            if args.redesign_positions is not None:
                 if batch["masked_res"].shape[0] != 1:
                     raise NotImplementedError
-                if ":" in args.predict_positions:
-                    chain, positions = args.predict_positions.split(":")
+                if ":" in args.redesign_positions:
+                    chain, positions = args.redesign_positions.split(":")
                     positions = positions.split(",")
                     if positions[0] == "":
                         positions = []
                 else:
-                    chain, positions = args.predict_positions, []
+                    chain, positions = args.redesign_positions, []
                 chain_M = torch.zeros_like(batch["masked_res"])
                 chain_mask = (
                     batch["chain_encoding_all"] == batch["chain_dict"][0][chain]
@@ -720,10 +599,9 @@ def run(args, trial=None):
                 else:
                     chain_M[chain_mask] = 1
                 model_args["chain_M"] = chain_M.to(args.device)
-            if args.num_predictions > 1 and args.decoder_type != "mpnn_auto":
-                model.train()
-            for i in range(args.num_predictions // args.batch_size + 1):
-                b = min(args.batch_size, args.num_predictions - i * args.batch_size)
+            num_predictions = 1
+            for i in range(num_predictions // args.batch_size + 1):
+                b = min(args.batch_size, num_predictions - i * args.batch_size)
                 if b <= 0:
                     continue
                 m_args = {}
@@ -743,24 +621,12 @@ def run(args, trial=None):
                                 m_args[k][kk] = None
 
                 output, mask_for_loss, *_ = get_prediction(
-                    model, m_args, args, chain_dict=batch["chain_dict"], barycenter=args.barycenter
+                    model, m_args, args, chain_dict=batch["chain_dict"]
                 )
                 out = output[-1]
-                true_protein_entry = ProteinEntry.from_arrays(
-                    batch["S"][0],
-                    batch["X"][0],
-                    batch["mask"][0],
-                    batch["chain_dict"][0],
-                    batch["chain_encoding_all"][0],
-                    mask_for_loss[0],
-                    batch.get("cdr", [None for _ in range(b)])[0],
-                )
-                basename = os.path.basename(args.predict_file)
+                basename = os.path.basename(args.redesign_file)
                 if not os.path.exists(os.path.join("output", basename.split(".")[0])):
                     os.makedirs(os.path.join("output", basename.split(".")[0]))
-                true_protein_entry.to_pickle(
-                    os.path.join("output", basename.split(".")[0], f"true.pickle")
-                )
                 for j in range(b):
                     mask_ = mask_for_loss[j].bool()
                     coords_ = batch["X"][j].float()
@@ -769,9 +635,9 @@ def run(args, trial=None):
                     )
                     seq_ = batch["S"][j].long()
                     if "seq" in out:
-                        seq_[mask_] = torch.argmax(out["seq"][j], dim=-1)[mask_].to(
+                        seq_[mask_] = torch.argmax(out["seq"][j][..., 1:], dim=-1)[mask_].to(
                             seq_.device
-                        )
+                        ) + 1
                     predicted_protein_entry = ProteinEntry.from_arrays(
                         seq_,
                         coords_,
@@ -781,12 +647,21 @@ def run(args, trial=None):
                         mask_for_loss[j],
                         batch.get("cdr", [None for _ in range(b)])[j],
                     )
-                    filepath = os.path.join(
+                    current_time = datetime.now().strftime("%Y%m%d_%H:%M:%S")
+                    pickle_filepath = os.path.join(
                         "output",
                         basename.split(".")[0],
-                        f"predicted_{i * args.batch_size + j}.pickle",
+                        # f"predicted_{i * args.batch_size + j}.pickle",
+                        f"predicted_{current_time}.pickle",
                     )
-                    predicted_protein_entry.to_pickle(filepath)
+                    pdb_filepath = os.path.join(
+                        "output",
+                        basename.split(".")[0],
+                        # f"predicted_{i * args.batch_size + j}.pdb",
+                        f"predicted_{current_time}.pdb",
+                    )
+                    predicted_protein_entry.to_pickle(pickle_filepath)
+                    predicted_protein_entry.to_pdb(pdb_filepath)
 
     elif args.test:
         print("\nTESTING")
@@ -798,10 +673,7 @@ def run(args, trial=None):
             valid_rmsd_full = 0.0
             valid_pp = 0.0
             valid_losses = defaultdict(float)
-            if args.skip_tqdm:
-                loader = test_loader
-            else:
-                loader = tqdm(test_loader)
+            loader = tqdm(test_loader)
             for batch in loader:
                 (
                     loss,
@@ -844,8 +716,7 @@ def run(args, trial=None):
         print(epoch_string)
 
     else:
-        if not args.test_invariance:
-            print("\nTRAINING")
+        print("\nTRAINING")
 
         best_res = 0
         for e in range(args.num_epochs):
@@ -858,10 +729,7 @@ def run(args, trial=None):
             train_rmsd = 0.0
             train_rmsd_full = 0.0
             train_pp = 0.0
-            if args.skip_tqdm or args.test_invariance:
-                loader = train_loader
-            else:
-                loader = tqdm(train_loader)
+            loader = tqdm(train_loader)
             for batch in loader:
                 try:
                     (
@@ -912,10 +780,7 @@ def run(args, trial=None):
             if (e + 1) % args.validate_every_n_epochs == 0:
                 model.eval()
                 with torch.no_grad():
-                    if args.skip_tqdm:
-                        loader = valid_loader
-                    else:
-                        loader = tqdm(valid_loader)
+                    loader = tqdm(valid_loader)
                     for batch in loader:
                         (
                             loss,
@@ -989,35 +854,6 @@ def run(args, trial=None):
             with open(logfile, "a") as f:
                 f.write(epoch_string)
             print(epoch_string)
-            if args.log_wandb_name is not None:
-                res = {
-                    "epoch": e + 1,
-                    "train_loss": train_loss,
-                }
-                if (e + 1) % args.validate_every_n_epochs == 0:
-                    res["valid_loss"] = validation_loss
-                if train_rmsd > 0:
-                    res["train_rmsd"] = train_rmsd
-                if train_rmsd_full > 0:
-                    res["train_rmsd_bb"] = train_rmsd_full
-                if valid_rmsd > 0:
-                    res["valid_rmsd"] = valid_rmsd
-                if valid_rmsd_full > 0:
-                    res["valid_rmsd_bb"] = valid_rmsd_full
-                if train_accuracy > 0:
-                    res["train_pp"] = train_pp
-                    res["train_acc"] = train_accuracy
-                if validation_accuracy > 0:
-                    res["valid_pp"] = valid_pp
-                    res["valid_acc"] = validation_accuracy
-                for k, v in train_losses.items():
-                    if v > 0:
-                        res[f"train_{k}_loss"] = v
-                for k, v in valid_losses.items():
-                    if v > 0:
-                        res[f"valid_{k}_loss"] = v
-                wandb.log(res)
-
             checkpoint_filename_last = (
                 base_folder + "model_weights/epoch_last.pt".format(e + 1, total_step)
             )
@@ -1025,8 +861,6 @@ def run(args, trial=None):
                 {
                     "epoch": e + 1,
                     "step": total_step,
-                    "num_edges": args.num_neighbors,
-                    "noise_level": args.backbone_noise,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                 },
@@ -1050,8 +884,6 @@ def run(args, trial=None):
                     {
                         "epoch": e + 1,
                         "step": total_step,
-                        "num_edges": args.num_neighbors,
-                        "noise_level": args.backbone_noise,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                     },
@@ -1071,16 +903,12 @@ def run(args, trial=None):
                     {
                         "epoch": e + 1,
                         "step": total_step,
-                        "num_edges": args.num_neighbors,
-                        "noise_level": args.backbone_noise,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                     },
                     checkpoint_filename,
                 )
 
-        if args.log_wandb_name is not None:
-            wandb.finish()
         return best_res
 
 
@@ -1110,36 +938,13 @@ def parse(command=None):
         help="path for logs and model weights",
     )
     argparser.add_argument(
-        "--skip_clustering",
-        action="store_true",
-        help="skip using sequence identity clusters",
-    )
-    argparser.add_argument(
         "--load_experiment",
         type=str,
         default=None,
         help="path for previous model weights, e.g. file.pt",
     )
     argparser.add_argument(
-        "--load_epoch_mode",
-        choices=["last", "best"],
-        default="last",
-        help="the mode for loading the model weights",
-    )
-    argparser.add_argument(
         "--num_epochs", type=int, default=100, help="number of epochs to train for"
-    )
-    argparser.add_argument(
-        "--save_model_every_n_epochs",
-        type=int,
-        default=10,
-        help="save model weights every n epochs",
-    )
-    argparser.add_argument(
-        "--validate_every_n_epochs",
-        type=int,
-        default=1,
-        help="validate model every n epochs",
     )
     argparser.add_argument(
         "--batch_size", type=int, default=8, help="number of tokens for one batch"
@@ -1151,130 +956,10 @@ def parse(command=None):
         help="maximum length of the protein complex",
     )
     argparser.add_argument(
-        "--hidden_dim", type=int, default=128, help="hidden model dimension"
-    )
-    argparser.add_argument(
-        "--num_encoder_layers", type=int, default=3, help="number of encoder layers"
-    )
-    argparser.add_argument(
-        "--num_decoder_layers", type=int, default=3, help="number of decoder layers"
-    )
-    argparser.add_argument(
-        "--num_encoder_mpnn_layers",
-        type=int,
-        default=1,
-        help="Number of stacked GVPs to use in one aggregation GVP layer inside the encoder (need encoder_type='gvp' to be used)",
-    )
-    argparser.add_argument(
-        "--num_decoder_mpnn_layers",
-        type=int,
-        default=1,
-        help="Number of stacked GVPs to use in one aggregation GVP layer inside the decoder (need decoder_type='gvp' to be used)",
-    )
-    argparser.add_argument(
-        "--num_neighbors",
-        type=int,
-        default=32,
-        help="number of neighbors for the sparse graph",
-    )
-    argparser.add_argument(
         "--dropout", type=float, default=0.1, help="dropout level; 0.0 means no dropout"
     )
     argparser.add_argument(
-        "--gradient_norm",
-        type=float,
-        default=-1.0,
-        help="clip gradient norm, set to negative to omit clipping",
-    )
-    argparser.add_argument(
-        "--no_mixed_precision",
-        action="store_true",
-        help="train without mixed precision",
-    )
-    argparser.add_argument(
-        "--violation_loss_epoch",
-        type=int,
-        default=0,
-        help="epoch after which to start using the violation loss",
-    )
-
-    # New parameters
-    argparser.add_argument(
-        "--lower_masked_limit",
-        type=int,
-        default=15,
-        help="The minimum number of residues to mask in each protein (ignored if mask_whole_chains is true or masking_probability is specified)",
-    )
-    argparser.add_argument(
-        "--upper_masked_limit",
-        type=int,
-        default=100,
-        help="The maximum number of residues to mask in each protein (ignored if mask_whole_chains is true or masking_probability is specified)",
-    )
-    argparser.add_argument(
-        "--masking_probability",
-        type=float,
-        help="The probability of masking a residue (if specified, overrides lower_masked_limit and upper_masked_limit)",
-    )
-    argparser.add_argument(
-        "--mask_whole_chains",
-        action="store_true",
-        help="if true, lower_masked_limit, upper_masked_limit, masking_probability are ignored and entire chains are masked",
-    )
-    argparser.add_argument(
         "--device", type=str, default="cuda", help="The name of the torch device"
-    )
-    argparser.add_argument(
-        "--embedding_dim",
-        type=int,
-        default=128,
-        help="The dimension of the residue type embedding",
-    )
-    argparser.add_argument(
-        "--no_smoothing",
-        action="store_true",
-        help="Use a regular cross-entropy loss without smooting the one-hot encoding",
-    )
-    argparser.add_argument(
-        "--use_mean",
-        action="store_true",
-        help="Use mean over existing neighbors for aggregation instead of sum",
-    )
-    argparser.add_argument(
-        "--use_egnn_for_refinement",
-        action="store_true",
-        help="Use an additional EGNN pre-processing layer for sructure refinement",
-    )
-    argparser.add_argument(
-        "--predict_structure",
-        action="store_true",
-        help="Predict the structure of the protein instead of the sequence",
-    )
-    argparser.add_argument(
-        "--predict_angles",
-        action="store_true",
-        help="Predict the frame orientations",
-    )
-    argparser.add_argument(
-        "--small_dataset", action="store_true", help="Use 0.1 of the training clusters"
-    )
-    argparser.add_argument(
-        "--tiny_dataset", action="store_true", help="Use 0.03 of the training clusters"
-    )
-    argparser.add_argument(
-        "--half_dataset", action="store_true", help="Use 0.5 of the training clusters"
-    )
-    argparser.add_argument(
-        "--train_force_binding_sites_frac",
-        type=float,
-        default=0.15,
-        help="If > 0, this fraction of regions sampled in polymer chains will be forced to be around the binding sites (in training)",
-    )
-    argparser.add_argument(
-        "--val_force_binding_sites_frac",
-        type=float,
-        default=0.15,
-        help="If > 0, this fraction of regions sampled in polymer chains will be forced to be around the binding sites (in validation)",
     )
     argparser.add_argument(
         "--test",
@@ -1292,278 +977,35 @@ def parse(command=None):
         help="Evaluate on the validation set instead of training (make sure to set previous_checkpoint)",
     )
     argparser.add_argument(
-        "--ignore_unknown_residues",
-        action="store_true",
-        help="Predict 20 aminoacids; if the residue type is unknown in the ground truth, mask it in loss calculation",
-    )
-    argparser.add_argument(
         "--debug", action="store_true", help="Only process 1000 files per subset"
     )
     argparser.add_argument(
-        "--load_to_ram",
-        action="store_true",
-        help="Load the data to RAM (use with caution! make sure the RAM is big enough!)",
-    )
-    argparser.add_argument(
-        "--interpolate",
-        choices=["none", "only_middle", "all"],
-        default="none",
-        help="Choose none for no interpolation, only_middle for only linear interpolation in the middle, all for linear interpolation + ends generation",
-    )
-    argparser.add_argument(
-        "--node_features",
-        default=None,
-        help='The node features type; choices = ["dihedral", "chemical", "topological", "esm", "sidechain_orientation", "backbone_orientation", "secondary_structure", "c_beta"] and combinations (e.g. "chemical+sidechain_orientation")',
-    )
-    argparser.add_argument(
-        "--lr",
-        type=float,
-        default=None,
-        help="If None, NoamOpt is used, otherwise Adam with this starting learning rate",
-    )
-    argparser.add_argument(
-        "--debug_file",
-        default=None,
-        type=str,
-        help="If not None, open a specific file instead of loading the dataset",
-    )
-    argparser.add_argument(
-        "--noise_unknown",
+        "--noise_std",
         default=None,
         type=float,
         help="The noise level to apply to masked structure (by default same as backbone_noise)",
     )
     argparser.add_argument(
         "--n_cycles",
-        default=1,
+        default=3,
         type=int,
         help="Number of refinement cycles (1 = only prediction, no refinement)",
     )
     argparser.add_argument(
-        "--seq_init_mode",
+        "--message_passing",
         choices=[
-            "zeros",
-            "random",
-            "esm_one_hot",
-            "esm_probabilities",
-            "uniform_probabilities",
-        ],
-        default="zeros",
-        help="The sequence initialization mode for one-shot decoders",
-    )
-    argparser.add_argument(
-        "--cycle_over_embedding",
-        action="store_true",
-        help="Run cycles at the embedding level instead of the sequence level",
-    )
-    argparser.add_argument(
-        "--double_sequence_features",
-        action="store_true",
-        help="If true, sequence is used both in the encoder and in the decoder",
-    )
-    argparser.add_argument(
-        "--decoder_type",
-        choices=[
-            "mpnn",
-            "mpnn_auto",
-            "egnn",
             "gvp",
             "gvp_orig",
-            "mpnn_enc",
-            "genprot",
-            "egnn_orig",
-            "egnn_refine",
-            "egnn_geom",
-            "egnn_lucid",
-            "real_sake",
         ],
         default="mpnn_auto",
     )
     argparser.add_argument(
-        "--encoder_type",
-        choices=[
-            "mpnn",
-            "egnn",
-            "gvp",
-            "gvp_orig",
-            "genprot",
-            "egnn_orig",
-            "egnn_refine",
-            "egnn_geom",
-            "egnn_lucid",
-            "real_sake",
-        ],
-        default="mpnn",
-    )
-    argparser.add_argument(
-        "--use_attention_in_encoder",
-        action="store_true",
-        help="If true, add global node attention to (MPNN) encoder layers",
-    )
-    argparser.add_argument(
-        "--use_attention_in_decoder",
-        action="store_true",
-        help="If true, add global node attention to (MPNN) decoder layers",
-    )
-    argparser.add_argument(
-        "--use_pna_in_encoder",
-        action="store_true",
-        help="If true, add PNA aggregation to encoder layers",
-    )
-    argparser.add_argument(
-        "--use_pna_in_decoder",
-        action="store_true",
-        help="If true, add PNA aggregation to decoder layers",
-    )
-    argparser.add_argument(
-        "--separate_modules_num",
-        default=1,
-        type=int,
-        help="The number of separate modules to use for recycling (if n_cycles > separate_modules_num, the last module is used for all remaining cycles)",
-    )
-    argparser.add_argument(
-        "--struct_loss_type",
-        choices=["mse", "huber", "relaxed_mse"],
-        help="The type of the structure loss",
-        default="mse",
-    )
-    argparser.add_argument(
-        "--skip_tqdm",
-        action="store_true",
-        help="Skip drawing the tqdm progressbars for epoch progress",
-    )
-    argparser.add_argument(
-        "--only_cycle_over_decoder",
-        action="store_true",
-        help="If true (and cycle_over_embedding is true, and n_cycles > 1), only cycle over the decoder, not the encoder",
-    )
-    argparser.add_argument(
-        "--not_shuffle_clusters",
-        action="store_true",
-        help="Use a fixed representative for each cluster instead of shuffling them",
-    )
-    argparser.add_argument(
-        "--random_connections_frac",
-        type=float,
-        default=0.0,
-        help="The fraction of random connections to add to the graph",
-    )
-    argparser.add_argument(
-        "--test_invariance",
-        action="store_true",
-        help="If true, test the SE(3) sequence invariance and/or coordinate equivariance of the model",
-    )
-    argparser.add_argument(
-        "--skip_weight_init",
-        action="store_true",
-        help="Skip weight initialization",
-    )
-    argparser.add_argument(
-        "--log_wandb_name",
-        help="Experiment name for wandb (if not given, experiment is not logged)",
-    )
-    argparser.add_argument(
-        "--use_checkpointing",
-        action="store_true",
-        help="Use gradient checkpointing",
-    )
-    argparser.add_argument(
-        "--predict_file",
+        "--redesign_file",
         help="Predict the given file",
     )
     argparser.add_argument(
-        "--predict_positions",
-        help="Mask specific positions in the given file (only with predict_file); e.g. A, A:5-10,20,30-40 (fasta-based numbering, ends not included)",
-    )
-    argparser.add_argument(
-        "--num_predictions",
-        type=int,
-        default=1,
-        help="Number of predictions to make (only with predict_file; if > 1, the model is run in train mode)",
-    )
-    argparser.add_argument(
-        "--temperature",
-        type=float,
-        default=1.0,
-        help="Temperature for sampling (only with predict_file or test and with AR models)",
-    )
-    argparser.add_argument(
-        "--seed",
-        type=int,
-        help="Random seed",
-    )
-    argparser.add_argument(
-        "--co_design",
-        choices=["none", "seq", "share_enc", "share_all"],
-        help="Co-design options",
-        default="none",
-    )
-    argparser.add_argument(
-        "--struct_loss_weight",
-        type=float,
-        default=1.0,
-        help="Structure loss weight",
-    )
-    argparser.add_argument(
-        "--seq_loss_weight",
-        type=float,
-        default=1.0,
-        help="Sequence loss weight",
-    )
-    argparser.add_argument(
-        "--quaternion",
-        action="store_true",
-        help="Use quaternions instead of Euler angles",
-    )
-    argparser.add_argument(
-        "--violation_loss_weight",
-        type=float,
-        default=0.0,
-        help="Violations loss weight",
-    )
-    argparser.add_argument(
-        "--backbone_noise",
-        type=float,
-        default=0.0,
-        help="Backbone noise",
-    )
-    argparser.add_argument(
-        "--m_dim",
-        type=int,
-        default=64,
-        help="m_dim in EGNN",
-    )
-    argparser.add_argument(
-        "--m_factor",
-        type=int,
-        default=1,
-        help="m_factor in EGNN",
-    )
-    argparser.add_argument(
-        "--hidden_factor",
-        type=int,
-        default=1,
-        help="hidden_factor in EGNN",
-    )
-    argparser.add_argument(
-        "--detach_between_cycles",
-        action="store_true",
-        help="Detach the graph between cycles",
-    )
-    argparser.add_argument(
-        "--not_pass_features",
-        action="store_true",
-        help="Do not pass features between encoder and decoder",
-    )
-    argparser.add_argument(
-        "--keep_edge_model",
-        action="store_true",
-        help="Keep the edge model in the last layer",
-    )
-    argparser.add_argument(
-        "--vector_angles",
-        action="store_true",
-        help="Use vector angles instead of Euler angles",
+        "--redesign_positions",
+        help="Mask specific positions in the given file (only with redesign_file); e.g. A, A:5-10,20,30-40 (fasta-based numbering, ends not included)",
     )
     argparser.add_argument(
         "--linear_layers_num",
@@ -1571,97 +1013,18 @@ def parse(command=None):
         default=0,
         help="The number of linear graph layers to use in the decoder (GVP)",
     )
-    argparser.add_argument(
-        "--pass_edge_vectors",
-        action="store_true",
-        help="Pass edge vectors to the decoder (GVP)",
-    )
 
     # Temporary
-    argparser.add_argument(
-        "--predict_oxygens",
-        action="store_true",
-        help="Predict oxygen rotation angle (GVP only)",
-    )
-    argparser.add_argument(
-        "--no_edge_update",
-        action="store_true",
-        help="Do not update edge vectors",
-    )
     argparser.add_argument(
         "--diffusion",
         action="store_true",
         help="Use diffusion",
     )
     argparser.add_argument(
-        "--flow_matching",
-        action="store_true",
-        help="Use flow matching",
-    )
-    argparser.add_argument(
         "--num_diffusion_steps",
         type=int,
-        default=300,
+        default=50,
         help="Number of diffusion steps",
-    )
-    argparser.add_argument(
-        "--mask_all_cdrs",
-        action="store_true",
-        help="Mask all CDRs",
-    )
-    argparser.add_argument(
-        "--variance_schedule",
-        choices=["cosine", "linear", "quadratic"],
-        default="linear",
-        help="Variance schedule",
-    )
-    argparser.add_argument(
-        "--freeze_structure",
-        action="store_true",
-        help="Freeze structure modules (when co_design is seq)",
-    )
-    argparser.add_argument(
-        "--mask_sequence",
-        action="store_true",
-        help="Mask sequence",
-    )
-    argparser.add_argument(
-        "--seq_diffusion_type",
-        choices=["mask", "uniform"],
-        default="mask",
-        help="Sequence diffusion type",
-    )
-    argparser.add_argument(
-        "--scale_timestep",
-        action="store_true",
-        help="Scale timestep feature",
-    )
-    argparser.add_argument(
-        "--reset_masked",
-        action="store_true",
-        help="Reset masked positions in diffusion",
-    )
-    argparser.add_argument(
-        "--diffusion_parameterization",
-        choices=["noise", "x0", "mu_t", "v"],
-        default="noise",
-        help="Predict noise, x0 or mu_t with the translation diffusion model",
-    )
-    argparser.add_argument(
-        "--variance_scale",
-        type=float,
-        default=1.0,
-        help="Variance scale for sampling",
-    )
-    argparser.add_argument(
-        "--not_recover_x0",
-        action="store_true",
-        help="Do not recover x0 in the translation diffusion model (when diffusion_parameterization is mu_t)",
-    )
-    argparser.add_argument(
-        "--force_neighbor_edges",
-        action="store_true",
-        help="Always form edges between neighbors in the chain",
     )
     argparser.add_argument(
         "--test_cdr",
@@ -1670,162 +1033,88 @@ def parse(command=None):
         help="Test on a single CDR",
     )
     argparser.add_argument(
-        "--linear_interpolation",
-        action="store_true",
-        help="Use linear interpolation for sampling",
-    )
-    argparser.add_argument(
-        "--skip_diffuse",
-        action="store_true",
-        help="Validate the same way as in the training",
-    )
-    argparser.add_argument(
-        "--add_mask_feature",
-        action="store_true",
-        help="Add mask feature",
-    )
-    argparser.add_argument(
-        "--add_anchor_feature",
-        action="store_true",
-        help="Add anchor feature",
-    )
-    argparser.add_argument(
-        "--sequence_in_encoder",
-        action="store_true",
-        help="Pass sequence to the encoder",
-    )
-    argparser.add_argument(
-        "--weighted_diff_loss",
-        action="store_true",
-        help="Weighted diffusion loss",
-    )
-    argparser.add_argument(
-        "--pos_cosine_nu",
-        type=float,
-        default=1.0,
-        help="The nu parameter for adaptive cosine variance schedule for CA coordinates",
-    )
-    argparser.add_argument(
-        "--rot_cosine_nu",
-        type=float,
-        default=1.0,
-        help="The nu parameter for adaptive cosine variance schedule for orientations",
-    )
-    argparser.add_argument(
-        "--seq_cosine_nu",
-        type=float,
-        default=1.0,
-        help="The nu parameter for adaptive cosine variance schedule for sequence",
-    )
-    argparser.add_argument(
-        "--barycenter",
-        action="store_true",
-        help="Use barycenter as mean of noise",
-    )
-    argparser.add_argument(
-        "--noise_around_interpolation",
-        action="store_true",
-        help="Add noise around linear interpolation",
-    )
-    argparser.add_argument(
-        "--patch_around_mask",
-        action="store_true",
-        help="Patch around masked positions",
-    )
-    argparser.add_argument(
-        "--only_separate_seq",
-        action="store_true",
-        help="Only use multiple separate modules for sequence",
-    )
-    argparser.add_argument(
-        "--only_separate_dec",
-        action="store_true",
-        help="Only use multiple separate modules in the decoder",
-    )
-    argparser.add_argument(
-        "--only_use_linear_for_str",
-        action="store_true",
-        help="Only use linear layers for structure",
-    )
-    argparser.add_argument(
         "--initial_patch_size",
         type=int,
         default=128,
         help="Initial patch size for patching",
     )
     argparser.add_argument(
-        "--mask_sequential",
+        "--alternative_noising",
         action="store_true",
-        help="Mask sequential positions",
-    )
-    argparser.add_argument(
-        "--use_graph_context",
-        action="store_true",
-        help="Use timestep as global context",
-    )
-    argparser.add_argument(
-        "--norm_coors",
-        action="store_true",
-        help="Normalize coordinates",
-    )
-    argparser.add_argument(
-        "--old_noise",
-        action="store_true",
-        help="Add noise to coordinates instead of replacing them",
-    )
-    argparser.add_argument(
-        "--noise_structure",
-        action="store_true",
-        help="Add noise to structure",
-    )
-    # argparser.add_argument(
-    #     "--no_oxygen",
-    #     action="store_true",
-    #     help="Do not use oxygen information",
-    # )
-    argparser.add_argument(
-        "--no_added_diff_noise",
-        action="store_true",
-        help="Do not add diffusion noise",
-    )
-    argparser.add_argument(
-        "--cosine_cutoff",
-        default=0.8,
-        type=float,
-        help="The cosine variance schedule cutoff for the diffusion model",
-    )
-    argparser.add_argument(
-        "--all_x0",
-        action="store_true",
-        help="Use all x0 parameterization in the diffusion model",
+        help="Use alternative noising",
     )
 
     args = argparser.parse_args()
 
-    if args.test_invariance:
-        args.no_mixed_precision = True
-        args.debug = True
-        args.max_protein_length = 150
-    if args.device == "cpu":
-        args.no_mixed_precision = True
-    for prefix in ["egnn", "gvp"]:
-        if args.decoder_type.startswith(prefix) or args.encoder_type.startswith(prefix):
-            args.no_mixed_precision = True
+    args.no_mixed_precision = True
     if args.test_excluded or args.validate:
         args.test = True
-    if args.flow_matching:
-        args.diffusion = True
-        args.diffusion_parameterization = "noise"
-    # args.predict_angles = args.predict_structure
 
     args.scale_timestep = True
-    args.update_edges = not args.no_edge_update
+    args.update_edges = True
     args.use_edge_vectors = True
-    args.no_sequence_in_encoder = not args.sequence_in_encoder
+    args.no_sequence_in_encoder = True
     args.force = True
     args.use_node_dropout = True
     args.less_dropout = False
     args.no_oxygen = True
+    args.load_epoch_mode = "last"
+    args.predict_oxygens = False
+    args.no_shuffle_clusters = False
+
+    args.save_model_every_n_epochs = 10
+    args.validate_every_n_epochs = 1
+    args.num_encoder_layers = 3
+    args.num_decoder_layers = 3
+    args.num_encoder_mpnn_layers = 1
+    args.num_decoder_mpnn_layers = 1
+    args.num_neighbors = 32
+    args.embedding_dim = 128
+    args.hidden_dim = 128
+    args.violation_loss_start_epoch = 0
+    args.violation_loss_weight = 0
+    args.lower_masked_limit = 15
+    args.upper_masked_limit = 50
+    args.predict_angles = True
+    args.predict_structure = True
+    args.co_design = "share_enc"
+    args.train_force_binding_sites_frac = 0.5
+    args.val_force_binding_sites_frac = 1.
+    args.ignore_unknown_residues = False
+    args.lr = None
+    args.mask_all_cdrs = False
+    args.force_neighbor_edges = False
+    args.double_sequence_features = False
+    args.barycenter = True
+    args.patch_around_mask = (args.redesign_file is None)
+    args.use_graph_context = False
+    args.seq_init_mode = "zeros"
+    args.use_pna_in_encoder = False
+    args.use_pna_in_decoder = False
+    args.use_attention_in_encoder = False
+    args.use_attention_in_decoder = False
+    args.separate_modules_num = 1
+    args.encoder_type = args.message_passing
+    args.decoder_type = args.message_passing
+    args.struct_loss_type = "mse"
+    args.struct_loss_weight = 1.0
+    args.seq_loss_weight = 1.0
+    args.use_checkpointing = False
+    args.quaternion = False
+    args.detach_between_cycles = True
+    args.not_pass_features = False
+    args.keep_edge_model = False
+    args.vector_angles = False
+    args.pass_edge_vectors = False
+
+    args.variance_schedule = "cosine"
+    args.seq_diffusion_type = "mask"
+    args.reset_masked = False
+    args.diffusion_parameterization = "x0"
+    args.variance_scale = 1.0
+    args.weighted_diff_loss = False
+    args.noise_around_interpolation = False
+    args.no_added_diff_noise = True
     return args
 
 
