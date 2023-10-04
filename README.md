@@ -62,5 +62,5 @@ To redesign a part of a new file, run this. The file can have either a `.pdb` or
 protfill --config configs/test/NAME.yaml --redesign_file 7kgk.pdb
 ```
 
-By default this command will redesign a random part of the protein. To redesign specific positions, use the `--redesign_positions` option. This argument should be in the format of `chain:start1-end1,start2-end2`, e.g. `A:5-10,20-21,30-40`. The numbering should be based on the fasta chain (0-indexed). The starts are included in the selected slice and the ends are not. The chain name is the author name, in case of PDB files.
+By default this command will redesign a random part of the protein. To redesign specific positions, use the `--redesign_positions` option. This argument should be in the format of `chain:start1-end1,start2-end2`, e.g. `A:5-10,20-21,30-40`. The numbering should be based on the fasta chain (0-indexed). The starts are included in the selected slice and the ends are not. The chain name is the author name, in case of PDB files. If the file was generated with `proteinflow` with CDR information, this can also be used with a `--test_cdr CDR` option to redesign a specific CDR.
 

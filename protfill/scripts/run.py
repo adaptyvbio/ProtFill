@@ -192,7 +192,9 @@ def initialize_sequence(seq, chain_M, seq_init_mode):
 
 
 def compute_loss(model_args, args, model, epoch):
-    output, mask_for_loss, S, X = get_prediction(model, model_args, args, barycenter=args.barycenter)
+    output, mask_for_loss, S, X = get_prediction(
+        model, model_args, args, barycenter=args.barycenter
+    )
 
     losses = defaultdict(lambda: torch.tensor(0.0).to(args.device))
     v_w = 0.0 if epoch < args.violation_loss_start_epoch else args.violation_loss_weight
@@ -210,7 +212,7 @@ def compute_loss(model_args, args, model, epoch):
                     out["seq"],
                     mask_for_loss,
                     ignore_unknown=args.ignore_unknown_residues,
-                    no_smoothing=False
+                    no_smoothing=False,
                 )
         if "coords" in out and not model.diffusion:
             loss_upd = get_coords_loss(
@@ -342,13 +344,17 @@ def get_prediction(model, model_args, args, chain_dict=None, barycenter=False):
     if barycenter:
         mu = []
         for i in range(model_args["X"].shape[0]):
-            anchor_ind = ProteinDataset.get_anchor_ind(model_args["chain_M"][i], model_args["mask"][i])
+            anchor_ind = ProteinDataset.get_anchor_ind(
+                model_args["chain_M"][i], model_args["mask"][i]
+            )
             mu.append(model_args["X"][i][[int(x) for x in anchor_ind], 2].mean(dim=0))
         mu = repeat(torch.stack(mu, dim=0), "b d -> b 1 1 d")
     else:
         mask_ = model_args["chain_M"] * model_args["mask"]
         mask_ = rearrange(mask_, "b l -> b l 1")
-        mu = torch.sum(model_args["X"][:, :, 2] * mask_, dim=1) / torch.sum(mask_, dim=1)
+        mu = torch.sum(model_args["X"][:, :, 2] * mask_, dim=1) / torch.sum(
+            mask_, dim=1
+        )
         mu = repeat(mu, "b d -> b 1 1 d")
     model_args["X"] = model_args["X"] - mu
     model_args["X"][~model_args["mask"].bool()] = 0.0
@@ -419,7 +425,6 @@ def get_loss(batch, optimizer, args, model, epoch):
 
 
 def run(args, trial=None):
-        
     scaler = torch.cuda.amp.GradScaler()
 
     args.device = torch.device(args.device)
@@ -453,7 +458,6 @@ def run(args, trial=None):
         "features_folder": args.features_path,
         "max_length": args.max_protein_length,
         "rewrite": True,
-
         "min_cdr_length": 3,
         "lower_limit": args.lower_masked_limit,
         "upper_limit": args.upper_masked_limit,
@@ -461,7 +465,6 @@ def run(args, trial=None):
         "patch_around_mask": args.patch_around_mask,
         "initial_patch_size": args.initial_patch_size,
     }
-
 
     training_dict = os.path.join(args.dataset_path, "splits_dict", "train.pickle")
     validation_dict = os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
@@ -553,7 +556,12 @@ def run(args, trial=None):
         total_step = 0
         epoch = 0
 
-    optimizer = get_std_opt(filter(lambda p: p.requires_grad, model.parameters()), args.hidden_dim, total_step, lr=args.lr)
+    optimizer = get_std_opt(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        args.hidden_dim,
+        total_step,
+        lr=args.lr,
+    )
 
     if PATH:
         try:
@@ -630,9 +638,12 @@ def run(args, trial=None):
                     )
                     seq_ = batch["S"][j].long()
                     if "seq" in out:
-                        seq_[mask_] = torch.argmax(out["seq"][j][..., 1:], dim=-1)[mask_].to(
-                            seq_.device
-                        ) + 1
+                        seq_[mask_] = (
+                            torch.argmax(out["seq"][j][..., 1:], dim=-1)[mask_].to(
+                                seq_.device
+                            )
+                            + 1
+                        )
                     predicted_protein_entry = ProteinEntry.from_arrays(
                         seq_,
                         coords_,
@@ -901,7 +912,8 @@ def run(args, trial=None):
                 )
 
         return best_res
-    
+
+
 def make_parser():
     argparser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -1075,14 +1087,14 @@ def parse(command=None, argparser=None):
     args.predict_structure = True
     args.co_design = "share_enc"
     args.train_force_binding_sites_frac = 0.5
-    args.val_force_binding_sites_frac = 1.
+    args.val_force_binding_sites_frac = 1.0
     args.ignore_unknown_residues = False
     args.lr = None
     args.mask_all_cdrs = False
     args.force_neighbor_edges = False
     args.double_sequence_features = False
     args.barycenter = True
-    args.patch_around_mask = (args.redesign_file is None)
+    args.patch_around_mask = args.redesign_file is None
     args.use_graph_context = False
     args.seq_init_mode = "zeros"
     args.use_pna_in_encoder = False

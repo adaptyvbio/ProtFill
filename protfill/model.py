@@ -491,10 +491,7 @@ class ProtFill(nn.Module):
         self.encoders = nn.ModuleList([encoders[encoder_type](args)])
         if separate_modules_num > 1:
             self.encoders += nn.ModuleList(
-                [
-                    encoders[encoder_type](args)
-                    for i in range(separate_modules_num - 1)
-                ]
+                [encoders[encoder_type](args) for i in range(separate_modules_num - 1)]
             )
 
         # Decoder layers
@@ -515,11 +512,14 @@ class ProtFill(nn.Module):
             )
         ]
         if self.co_design == "share_enc":
-            self.decoders = [combine_decoders(
-                coords_decoder=self.decoders[c * 2 + 1],  # coords
-                seq_decoder=self.decoders[c * 2],  # seq
-                predict_angles=self.predict_angles,
-            ) for c in range(separate_modules_num)]
+            self.decoders = [
+                combine_decoders(
+                    coords_decoder=self.decoders[c * 2 + 1],  # coords
+                    seq_decoder=self.decoders[c * 2],  # seq
+                    predict_angles=self.predict_angles,
+                )
+                for c in range(separate_modules_num)
+            ]
         self.decoders = nn.ModuleList(self.decoders)
         if self.predict_sequence:
             self.W_out = nn.Linear(hidden_dim, num_letters, bias=True)
@@ -743,7 +743,9 @@ class ProtFill(nn.Module):
 
         return X, V_structure, vector_node_struct, rotation, translation
 
-    def generate_embeddings(self, X, S, mask, E, E_idx, vector_node_struct, V_struct, chain_M):
+    def generate_embeddings(
+        self, X, S, mask, E, E_idx, vector_node_struct, V_struct, chain_M
+    ):
         if not self.str_features:
             h_V = torch.zeros(
                 (E.shape[0], E.shape[1], self.hidden_dim), device=E.device
@@ -791,9 +793,7 @@ class ProtFill(nn.Module):
             if V_sequence is not None:
                 V_sequence[chain_M.bool()] = 0
         if self.diffusion:
-            seq, distribution = self.diffusion.noise_sequence(
-                seq, chain_M, timestep
-            )
+            seq, distribution = self.diffusion.noise_sequence(seq, chain_M, timestep)
         elif self.seq_init_mode == "zeros":
             seq[chain_M.bool()] = 0
         elif self.seq_init_mode == "random":
@@ -868,7 +868,9 @@ class ProtFill(nn.Module):
                 transform=transform,
                 timestep=timestep,
             )
-        timestep_factor = 1 if not self.scale_timestep else 25 / self.num_diffusion_steps
+        timestep_factor = (
+            1 if not self.scale_timestep else 25 / self.num_diffusion_steps
+        )
         timestep_ = None if timestep is None else timestep * timestep_factor
         E, E_idx, vector_node_struct, V_structure_new, timestep_rbf = self.features(
             X[:, :, :4],
@@ -879,7 +881,10 @@ class ProtFill(nn.Module):
             timestep=timestep_,
         )
         if timestep is not None and not self.use_graph_context:
-            E = torch.cat([E, repeat(timestep_rbf, "b d -> b l k d", l=E.shape[1], k=E.shape[2])], dim=-1)
+            E = torch.cat(
+                [E, repeat(timestep_rbf, "b d -> b l k d", l=E.shape[1], k=E.shape[2])],
+                dim=-1,
+            )
         struct_features = []
         if V_structure_new is not None:
             struct_features.append(V_structure_new)
@@ -947,7 +952,7 @@ class ProtFill(nn.Module):
             rotation_gt,
             seq_t,
             distribution,
-            timestep_rbf
+            timestep_rbf,
         )
 
     def update_coords(self, coords, h_V, h_E, E_idx):
@@ -1624,14 +1629,16 @@ class ProtFill(nn.Module):
             for k, v in state_dict.items():
                 name_split = k.split(".")
                 if name_split[0] == "decoders":
-                    name_split = name_split[: 2] + ["seq_decoder"] + name_split[2:]
+                    name_split = name_split[:2] + ["seq_decoder"] + name_split[2:]
                     new_state_dict[".".join(name_split)] = v
                 else:
                     new_state_dict[k] = v
             state_dict = new_state_dict
             strict = False
         super().load_state_dict(state_dict, strict=strict)
-        if self.co_design =="share_enc" and len(self.state_dict()) != len(state_dict): # freeze the encoder and the seq decoder
+        if self.co_design == "share_enc" and len(self.state_dict()) != len(
+            state_dict
+        ):  # freeze the encoder and the seq decoder
             for param in self.parameters():
                 param.requires_grad = False
             for dec in self.decoders:
@@ -1640,7 +1647,7 @@ class ProtFill(nn.Module):
             if self.predict_angles:
                 for param in self.angle_layer.parameters():
                     param.requires_grad = True
-            
+
             # for param in self.encoders.parameters():
             #     param.requires_grad = False
             # for param in self.W_out.parameters():
@@ -1672,7 +1679,7 @@ class ProtFill(nn.Module):
         output = []
         seq = deepcopy(S)
         coords = deepcopy(X)
-            # timestep = torch.ones(X.shape[:1])
+        # timestep = torch.ones(X.shape[:1])
         if self.diffusion is not None:
             timestep = torch.randint(1, self.num_diffusion_steps + 1, size=X.shape[:1])
         else:

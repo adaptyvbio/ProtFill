@@ -460,16 +460,18 @@ class GVPLayer(nn.Module):
             in_dims = (in_dims[0] + graph_context_dim, in_dims[1])
 
         if self.n_layers == 1:
-            gvps = [GVP2(
-                in_dims,
-                out_node_dims,
-                out_edge_dims,
-                n_neighbors,
-                activations=activations,
-                vector_gate=vector_gate,
-                drop_rate=0 if self.less_dropout else drop_rate,
-                use_pna=self.use_pna,
-            )]
+            gvps = [
+                GVP2(
+                    in_dims,
+                    out_node_dims,
+                    out_edge_dims,
+                    n_neighbors,
+                    activations=activations,
+                    vector_gate=vector_gate,
+                    drop_rate=0 if self.less_dropout else drop_rate,
+                    use_pna=self.use_pna,
+                )
+            ]
         else:
             gvps = [
                 GVP2(
@@ -540,7 +542,15 @@ class GVPLayer(nn.Module):
         )
         edges_flat = tuple_nodify(edges)
         if graph_context is not None:
-            in_scalar = torch.cat([nodes_select_in[0], repeat(graph_context, "b d -> b l d", l=nodes_select_in[0].shape[1])], dim=-1)
+            in_scalar = torch.cat(
+                [
+                    nodes_select_in[0],
+                    repeat(
+                        graph_context, "b d -> b l d", l=nodes_select_in[0].shape[1]
+                    ),
+                ],
+                dim=-1,
+            )
             nodes_select_in = (in_scalar, nodes_select_in[1])
 
         if self.vni and self.vei:
@@ -566,7 +576,9 @@ class GVPLayer(nn.Module):
             input = torch.cat([nodes_select_in, edges_flat, nodes_select_out], dim=-1)
         return input
 
-    def forward(self, nodes, edges, indexes, mask=None, global_tokens=None, graph_context=None):
+    def forward(
+        self, nodes, edges, indexes, mask=None, global_tokens=None, graph_context=None
+    ):
         input = self.combine(nodes, edges, indexes, graph_context)
 
         if mask is not None:
@@ -731,13 +743,26 @@ class GVPNet(nn.Module):
         self.linear = nn.ModuleList(linear)
 
     def forward(
-        self, nodes, edges, indexes, coords, residue_idx, chain_labels, mask=None, graph_context=None,
+        self,
+        nodes,
+        edges,
+        indexes,
+        coords,
+        residue_idx,
+        chain_labels,
+        mask=None,
+        graph_context=None,
     ):
         nodes_out, edges_out = nodes, edges
         global_tokens = None
         for gvp in self.gvps:
             nodes_out, edges_out, global_tokens = gvp(
-                nodes_out, edges_out, indexes, mask=mask, global_tokens=global_tokens, graph_context=graph_context,
+                nodes_out,
+                edges_out,
+                indexes,
+                mask=mask,
+                global_tokens=global_tokens,
+                graph_context=graph_context,
             )
         # recompute edges_out and indexes
         if len(self.linear) > 0 and not self.no_linear:
@@ -750,7 +775,12 @@ class GVPNet(nn.Module):
             edges_out = (edges_out, edge_vectors)
             for gvp in self.linear:
                 nodes_out, edges_out, global_tokens = gvp(
-                    nodes_out, edges_out, indexes, mask=mask, global_tokens=global_tokens, graph_context=graph_context,
+                    nodes_out,
+                    edges_out,
+                    indexes,
+                    mask=mask,
+                    global_tokens=global_tokens,
+                    graph_context=graph_context,
                 )
         return nodes_out, edges_out
 
@@ -768,7 +798,10 @@ class GVPe_Encoder(Encoder):
 
         node_dims = (
             [(args.hidden_dim, args.vector_dim)]
-            + [(args.hidden_dim, args.vector_dim) for _ in range(args.num_encoder_layers - 1)]
+            + [
+                (args.hidden_dim, args.vector_dim)
+                for _ in range(args.num_encoder_layers - 1)
+            ]
             + [(args.hidden_dim, vector_dim)]
         )
 
@@ -840,7 +873,8 @@ class GVPe_Decoder(Decoder):
         self.use_edge_vectors = args.use_edge_vectors
         self.pass_edge_vectors = args.pass_edge_vectors
         node_dims = [
-            (args.hidden_dim, args.vector_dim) for _ in range(args.num_decoder_layers - 1)
+            (args.hidden_dim, args.vector_dim)
+            for _ in range(args.num_decoder_layers - 1)
         ] + [(args.hidden_dim, 1)]
         node_dims = [(args.hidden_dim, args.vector_dim)] + node_dims
 

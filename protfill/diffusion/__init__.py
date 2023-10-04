@@ -131,7 +131,13 @@ class VarianceSchedule(nn.Module):
     """
 
     def __init__(
-        self, num_steps=100, s=0.01, nu=1, schedule="linear", seq_diffusion_type="mask", cosine_cutoff=0.8
+        self,
+        num_steps=100,
+        s=0.01,
+        nu=1,
+        schedule="linear",
+        seq_diffusion_type="mask",
+        cosine_cutoff=0.8,
     ):
         super().__init__()
 
@@ -288,10 +294,16 @@ class Diffuser:
         """
 
         self.var_sched_rot = VarianceSchedule(
-            num_steps=num_steps, schedule=schedule_name, nu=nu_rot, cosine_cutoff=cosine_cutoff
+            num_steps=num_steps,
+            schedule=schedule_name,
+            nu=nu_rot,
+            cosine_cutoff=cosine_cutoff,
         )
         self.var_sched_pos = VarianceSchedule(
-            num_steps=num_steps, schedule=schedule_name, nu=nu_pos, cosine_cutoff=cosine_cutoff
+            num_steps=num_steps,
+            schedule=schedule_name,
+            nu=nu_pos,
+            cosine_cutoff=cosine_cutoff,
         )
         self.var_sched_seq = VarianceSchedule(
             num_steps=num_steps,
@@ -801,7 +813,9 @@ class Diffuser:
             rotation_so3 = log_R / (torch.sqrt(1 - alpha_bar.squeeze(-1)) + 1e-7)
         X[chain_M_bool] = (
             X[:, :, [2]]
-            + torch.einsum("b n i d, b n k d -> b n k i", orientations_rotated, local_coords)
+            + torch.einsum(
+                "b n i d, b n k d -> b n k i", orientations_rotated, local_coords
+            )
         )[chain_M_bool]
 
         # go back to scale
@@ -912,7 +926,9 @@ class Diffuser:
 
         # standardize
         if self.noise_around_interpolation:
-            X_int = linear_interpolation(coords[:, :, 2], (1 - chain_M) * mask).unsqueeze(-2)
+            X_int = linear_interpolation(
+                coords[:, :, 2], (1 - chain_M) * mask
+            ).unsqueeze(-2)
             coords = coords - X_int
         coords = coords.to(dtype=torch.float64) / std_coords
         if len(translation_predicted.shape) == 3:
@@ -992,7 +1008,9 @@ class Diffuser:
                     "b l i j, b l j k -> b l i k", R, orientations
                 )[timestep > 1]
         else:
-            orientations = self.random_uniform_so3(size=(coords_ca.shape[0], coords_ca.shape[1]), device=coords_ca.device)
+            orientations = self.random_uniform_so3(
+                size=(coords_ca.shape[0], coords_ca.shape[1]), device=coords_ca.device
+            )
 
         # go back to scale
         if len(translation_predicted.shape) != 3:
@@ -1029,7 +1047,9 @@ class Diffuser:
 
         factor = 1
         if self.weighted_diff_loss:
-            lambda_t = self.var_sched_pos.alpha_bars[timestep] / (1 - self.var_sched_pos.alpha_bars[timestep])
+            lambda_t = self.var_sched_pos.alpha_bars[timestep] / (
+                1 - self.var_sched_pos.alpha_bars[timestep]
+            )
             # lambda_t = torch.clip(
             #     self.var_sched_pos.alpha_bars[timestep]
             #     / (1 - self.var_sched_pos.alpha_bars[timestep]),
