@@ -991,7 +991,7 @@ def make_parser():
             "gvp",
             "gvp_orig",
         ],
-        default="mpnn_auto",
+        default="gvp",
     )
     argparser.add_argument(
         "--redesign_file",
