@@ -138,7 +138,8 @@ sync_experiments.sh
 */user_data.sh
 *last_study.pkl
 .tmp/*
-data
+data/proteinflow*
+data/tmp_features
 sample_data/tmp/
 update_path.sh
 wandb
