@@ -15,6 +15,8 @@ conda activate protfill
 python -m pip install .
 ```
 
+The model weights can be downloaded from Google drive [here](https://drive.google.com/drive/folders/1oJsVl4dhlsdhvgp5zfouL7rH3d2tpQzm?usp=sharing). Put them into the `model_weights` folder after downloading.
+
 ## Data
 The datasets can be downloaded from `proteinflow`.
 ```bash
