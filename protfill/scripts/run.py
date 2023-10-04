@@ -436,7 +436,7 @@ def run(args, trial=None):
         if not os.path.exists(base_folder + subfolder):
             os.makedirs(base_folder + subfolder)
 
-    PATH = args.load_experiment or ""
+    PATH = args.load_checkpoint or ""
 
     logfile = base_folder + "log.txt"
     if not PATH:
@@ -932,7 +932,7 @@ def make_parser():
         help="path for logs and model weights",
     )
     argparser.add_argument(
-        "--load_experiment",
+        "--load_checkpoint",
         type=str,
         default=None,
         help="path for previous model weights, e.g. file.pt",
