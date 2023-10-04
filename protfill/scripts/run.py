@@ -202,10 +202,8 @@ def compute_loss(model_args, args, model, epoch):
             if model.diffusion and model.training:
                 losses["seq"] += model.diffusion.get_sequence_loss(
                     seq_0=S,
-                    seq_t=out["seq_t"],
                     logits_predicted=out["seq"],
                     mask=mask_for_loss,
-                    timestep=out["timestep"],
                 )
             else:
                 losses["seq"] += get_seq_loss(
@@ -238,7 +236,6 @@ def compute_loss(model_args, args, model, epoch):
                 rotation_predicted=out["rotation"],
                 rotation_true=out["rotation_gt"],
                 mask=mask_for_loss,
-                timestep=out["timestep"],
             )
     seq_predict = output[-1].get("seq")
     coords_predict = output[-1].get("coords")
@@ -505,7 +502,7 @@ def run(args, trial=None):
             dataset_folder=os.path.join(args.dataset_path, "train"),
             clustering_dict_path=training_dict,
             use_fraction=use_frac,
-            shuffle_clusters=not args.not_shuffle_clusters,
+            shuffle_clusters=True,
             force_binding_sites_frac=args.train_force_binding_sites_frac,
             **DATA_PARAM,
         )
