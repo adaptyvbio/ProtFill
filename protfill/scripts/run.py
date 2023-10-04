@@ -907,11 +907,8 @@ def run(args, trial=None):
                 )
 
         return best_res
-
-
-def parse(command=None):
-    if command is not None:
-        sys.argv = command.split()
+    
+def make_parser():
     argparser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
@@ -1040,7 +1037,15 @@ def parse(command=None):
         action="store_true",
         help="Use alternative noising",
     )
+    return argparser
 
+
+def parse(command=None, argparser=None):
+    if command is not None:
+        sys.argv = command.split()
+
+    if argparser is None:
+        argparser = make_parser()
     args = argparser.parse_args()
 
     args.no_mixed_precision = True
