@@ -5,7 +5,7 @@ batch_size: 8
 max_protein_length: 2000
 device: cuda
 n_cycles: 3
-linear_layers_num: 3
+linear_layers_num: 0
 alternative_noising: true
 dropout: 0.1
 noise_std: 5
