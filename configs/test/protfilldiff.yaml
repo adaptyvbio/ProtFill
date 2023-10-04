@@ -11,3 +11,5 @@ alternative_noising: false
 dropout: 0.2
 noise_std: 1
 diffusion: true
+load_checkpoint: ./model_weights/protfilldiff.pt
+initial_patch_size: 128
