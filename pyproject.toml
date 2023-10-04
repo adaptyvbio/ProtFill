@@ -10,8 +10,6 @@ dependencies = [
     "numpy",
     "p_tqdm",
     "pandas",
-    "giotto-tda",
-    "boto3",
     "yacs",
     "einops",
     "torch<=1.13",

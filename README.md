@@ -27,7 +27,8 @@ proteinflow split --tag 20230626_sabdab
 ```
 
 ## Configs
-There are four models in this repository and they can be tested or replicated with corresponding config files.
+There are four models in this repository and they can be tested or replicated with corresponding config files. The noising scheme refers to either replacing the masked data with samples from a gaussian distribution (standard) or corrupting it with noise (alternative).
+
 | Name                        | Dataset   | Diffusion | Noising scheme |
 |-----------------------------|-----------|-----------|-----------------|
 | protfill_ab                 | antibody  | no        | standard       |
