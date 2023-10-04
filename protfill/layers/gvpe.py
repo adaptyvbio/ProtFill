@@ -755,10 +755,10 @@ class GVPNet(nn.Module):
         return nodes_out, edges_out
 
 
-class GVP_Encoder(Encoder):
+class GVPe_Encoder(Encoder):
     def __init__(self, args) -> None:
         super().__init__()
-        self.return_X = args.decoder_type not in ["gvp", "gvp_orig"]
+        self.return_X = False
         self.use_edge_vectors = args.use_edge_vectors
         self.pass_edge_vectors = args.pass_edge_vectors
         if self.return_X:
@@ -834,7 +834,7 @@ class GVP_Encoder(Encoder):
         )
 
 
-class GVP_Decoder(Decoder):
+class GVPe_Decoder(Decoder):
     def __init__(self, args) -> None:
         super().__init__()
         self.use_edge_vectors = args.use_edge_vectors
@@ -844,7 +844,7 @@ class GVP_Decoder(Decoder):
         ] + [(args.hidden_dim, 1)]
         node_dims = [(args.hidden_dim, args.vector_dim)] + node_dims
 
-        self.accept_X = args.encoder_type not in ["gvp", "gvp_orig"]
+        self.accept_X = False
 
         self.decoder = GVPNet(
             node_dims=node_dims,

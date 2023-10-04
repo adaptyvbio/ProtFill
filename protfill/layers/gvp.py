@@ -386,7 +386,7 @@ class GVPConvLayer(nn.Module):
         return x
     
 
-class GVPOrig_Encoder(Encoder):
+class GVP_Encoder(Encoder):
     def __init__(self, args) -> None:
         super().__init__()
         self.return_X = args.decoder_type not in ["gvp", "gvp_orig"]
@@ -466,7 +466,7 @@ class GVPOrig_Encoder(Encoder):
         )
 
 
-class GVPOrig_Decoder(Decoder):
+class GVP_Decoder(Decoder):
     def __init__(self, args) -> None:
         super().__init__()
         self.use_edge_vectors = args.use_edge_vectors

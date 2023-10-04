@@ -989,9 +989,9 @@ def make_parser():
         "--message_passing",
         choices=[
             "gvp",
-            "gvp_orig",
+            "gvpe",
         ],
-        default="gvp",
+        default="gvpe",
     )
     argparser.add_argument(
         "--redesign_file",

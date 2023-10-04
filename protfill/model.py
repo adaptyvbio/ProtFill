@@ -9,8 +9,8 @@ from copy import deepcopy
 import os
 from proteinflow.data import ProteinEntry
 
-from protfill.layers.gvp import GVPOrig_Decoder, GVPOrig_Encoder
-from protfill.layers.gvp_new import GVP_Decoder, GVP_Encoder
+from protfill.layers.gvp import GVP_Decoder, GVP_Encoder
+from protfill.layers.gvpe import GVPe_Decoder, GVPe_Encoder
 from protfill.utils.model_utils import *
 from protfill.diffusion import Diffuser, get_orientations
 from torch.utils.checkpoint import checkpoint
@@ -319,18 +319,16 @@ class ProtFill(nn.Module):
     ):
         super(ProtFill, self).__init__()
         encoders = {
+            "gvpe": GVPe_Encoder,
             "gvp": GVP_Encoder,
-            "gvp_orig": GVPOrig_Encoder,
         }
         decoders = {
+            "gvpe": GVPe_Decoder,
             "gvp": GVP_Decoder,
-            "gvp_orig": GVPOrig_Decoder,
         }
-        auto_decoders = ["mpnn_auto"]
-        force_update_decoders = ["mpnn", "mpnn_enc"]
-        vector_update_decoders = ["gvp", "gvp_orig"]
-        self.vector_encoders = ["gvp", "gvp_orig"]
-        self.vector_decoders = ["gvp", "gvp_orig"]
+        vector_update_decoders = ["gvp", "gvpe"]
+        self.vector_encoders = ["gvp", "gvpe"]
+        self.vector_decoders = ["gvp", "gvpe"]
         # self.vector_encoders = []
         # self.vector_decoders = []
         num_letters = 20 if ignore_unknown else 21
@@ -373,15 +371,6 @@ class ProtFill(nn.Module):
             self.predict_structure = True
             self.predict_sequence = True
 
-        if self.predict_structure and decoder_type in auto_decoders:
-            raise NotImplementedError(
-                "Predicting structure with AR decoders is not implemented!"
-            )
-        if self.predict_structure and decoder_type in force_update_decoders:
-            raise NotImplementedError(
-                f"Predicting structure with {decoder_type} decoder is not implemented!"
-            )
-
         if co_design == "seq":
             n_cycles *= 2
             separate_modules_num *= 2
@@ -412,7 +401,7 @@ class ProtFill(nn.Module):
         self.alternative_noising = args.alternative_noising
         self.no_oxygen = args.no_oxygen
 
-        self.one_shot_decoder = decoder_type not in auto_decoders
+        self.one_shot_decoder = True
         self.use_sequence_in_encoder = (
             self.one_shot_decoder if not no_sequence_in_encoder else False
         )
@@ -423,10 +412,8 @@ class ProtFill(nn.Module):
             "esm_probabilities",
             "uniform_probabilities",
         ]
-        self.force_update = (
-            decoder_type in force_update_decoders
-        ) and predict_structure
-        self.vector_update = decoder_type in vector_update_decoders
+        self.force_update = False
+        self.vector_update = True
 
         if separate_modules_num > n_cycles:
             separate_modules_num = n_cycles
