@@ -12,3 +12,4 @@ noise_std: 0.1
 diffusion: false
 load_checkpoint: ./model_weights/protfill_ab.pt
 initial_patch_size: 128
+message_passing: gvpe

@@ -5,9 +5,9 @@ batch_size: 8
 max_protein_length: 2000
 device: cuda
 n_cycles: 3
-message_passing: gvpe
 linear_layers_num: 3
 alternative_noising: true
 dropout: 0.1
 noise_std: 5
 diffusion: false
+message_passing: gvpe

@@ -473,7 +473,7 @@ def run(args, trial=None):
     print("\nDATA LOADING")
     use_frac = 1.0
     if args.test:
-        if args.test_excluded:
+        if args.easy_test:
             folder, clustering_dict_path = "excluded", excluded_dict
         elif args.validate:
             folder, clustering_dict_path = "valid", validation_dict
@@ -956,12 +956,12 @@ def make_parser():
         "--device", type=str, default="cuda", help="The name of the torch device"
     )
     argparser.add_argument(
-        "--test",
+        "--hard_test",
         action="store_true",
         help="Evaluate on the test set instead of training (make sure to set previous_checkpoint)",
     )
     argparser.add_argument(
-        "--test_excluded",
+        "--easy_test",
         action="store_true",
         help="Evaluate on the excluded set instead of training (make sure to set previous_checkpoint)",
     )
@@ -1007,8 +1007,6 @@ def make_parser():
         default=0,
         help="The number of linear graph layers to use in the decoder (GVP)",
     )
-
-    # Temporary
     argparser.add_argument(
         "--diffusion",
         action="store_true",
@@ -1049,7 +1047,7 @@ def parse(command=None, argparser=None):
     args = argparser.parse_args()
 
     args.no_mixed_precision = True
-    if args.test_excluded or args.validate:
+    if args.easy_test or args.validate or args.hard_test:
         args.test = True
 
     args.scale_timestep = True

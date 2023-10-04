@@ -41,7 +41,6 @@ An example can look like this.
 protfill --config configs/train/protfill_ab.yaml --dataset_path data/proteinflow_20230626_sabdab
 ```
 
-
 ## Validation
 In order to test on the 'easy' test subset, run the following.
 ```bash
@@ -56,5 +55,5 @@ To redesign a part of a new file, run this. The file can have either a `.pdb` or
 protfill --config configs/test/NAME.yaml --dataset_path DATASET_PATH --redesign_file 7kgk.pdb
 ```
 
-By default this command will redesign a random part of the protein. To redesign specific positions, use the `--redesign_positions` option. This argument should be in the format of `chain:start1-end1,start2-end2`, e.g. `A:5-10,20-21,30-40`. The numbering should be based on the fasta chain (0-indexed). The starts are included in the selected slice and the ends are not.
+By default this command will redesign a random part of the protein. To redesign specific positions, use the `--redesign_positions` option. This argument should be in the format of `chain:start1-end1,start2-end2`, e.g. `A:5-10,20-21,30-40`. The numbering should be based on the fasta chain (0-indexed). The starts are included in the selected slice and the ends are not. The chain name is the author name, in case of PDB files.
 

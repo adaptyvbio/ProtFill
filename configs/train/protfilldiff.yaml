@@ -10,3 +10,4 @@ alternative_noising: false
 dropout: 0.2
 noise_std: 1
 diffusion: true
+message_passing: gvpe
