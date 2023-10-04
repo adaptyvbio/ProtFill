@@ -916,68 +916,51 @@ def make_parser():
     argparser.add_argument(
         "--dataset_path",
         type=str,
-        default="./data/proteinflow_20230102_stable",
-        help="path for loading training data (a folder with training, test and validation subfolders)",
+        required=True,
+        help="Path for loading training data (a folder with training, test, validation and splits_dict subfolders, proteinflow style)",
     )
     argparser.add_argument(
         "--features_path",
         type=str,
         default="./data/tmp_features",
-        help="path where ProteinMPNN features will be saved",
+        help="Path where temporary features will be saved",
     )
     argparser.add_argument(
         "--output_path",
         type=str,
         default="./exp",
-        help="path for logs and model weights",
+        help="Path for logs and model weights",
     )
     argparser.add_argument(
         "--load_checkpoint",
         type=str,
         default=None,
-        help="path for previous model weights, e.g. file.pt",
+        help="Path for previous model weights, e.g. file.pt",
+    )
+
+    argparser.add_argument(
+        "--num_epochs", type=int, default=100, help="Number of epochs to train for"
     )
     argparser.add_argument(
-        "--num_epochs", type=int, default=100, help="number of epochs to train for"
-    )
-    argparser.add_argument(
-        "--batch_size", type=int, default=8, help="number of tokens for one batch"
-    )
-    argparser.add_argument(
-        "--max_protein_length",
-        type=int,
-        default=2000,
-        help="maximum length of the protein complex",
-    )
-    argparser.add_argument(
-        "--dropout", type=float, default=0.1, help="dropout level; 0.0 means no dropout"
+        "--batch_size", type=int, default=8, help="Number of tokens for one batch"
     )
     argparser.add_argument(
         "--device", type=str, default="cuda", help="The name of the torch device"
     )
     argparser.add_argument(
-        "--hard_test",
-        action="store_true",
-        help="Evaluate on the test set instead of training (make sure to set previous_checkpoint)",
+        "--max_protein_length",
+        type=int,
+        default=2000,
+        help="Maximum length of the protein complex",
     )
     argparser.add_argument(
-        "--easy_test",
-        action="store_true",
-        help="Evaluate on the excluded set instead of training (make sure to set previous_checkpoint)",
-    )
-    argparser.add_argument(
-        "--validate",
-        action="store_true",
-        help="Evaluate on the validation set instead of training (make sure to set previous_checkpoint)",
-    )
-    argparser.add_argument(
-        "--debug", action="store_true", help="Only process 1000 files per subset"
+        "--dropout", type=float, default=0.1, help="Dropout level; 0.0 means no dropout"
     )
     argparser.add_argument(
         "--noise_std",
-        default=None,
+        default=0.1,
         type=float,
-        help="The noise level to apply to masked structure (by default same as backbone_noise)",
+        help="The standard deviation of the noise (added to the data with alternative noising, replacing the data otherwise)",
     )
     argparser.add_argument(
         "--n_cycles",
@@ -992,20 +975,13 @@ def make_parser():
             "gvpe",
         ],
         default="gvpe",
-    )
-    argparser.add_argument(
-        "--redesign_file",
-        help="Predict the given file",
-    )
-    argparser.add_argument(
-        "--redesign_positions",
-        help="Mask specific positions in the given file (only with redesign_file); e.g. A, A:5-10,20,30-40 (fasta-based numbering, ends not included)",
+        help="The type of message passing to use",
     )
     argparser.add_argument(
         "--linear_layers_num",
         type=int,
         default=0,
-        help="The number of linear graph layers to use in the decoder (GVP)",
+        help="The number of linear graph layers to use in the decoder",
     )
     argparser.add_argument(
         "--diffusion",
@@ -1028,12 +1004,36 @@ def make_parser():
         "--initial_patch_size",
         type=int,
         default=128,
-        help="Initial patch size for patching",
+        help="Initial patch size for cutting the cutting around the masked region",
     )
     argparser.add_argument(
         "--alternative_noising",
         action="store_true",
-        help="Use alternative noising",
+        help="Use alternative noising (add noise to data instead of replacing it)",
+    )
+
+    argparser.add_argument(
+        "--hard_test",
+        action="store_true",
+        help="Evaluate on the 'hard' test set (make sure to set load_checkpoint)",
+    )
+    argparser.add_argument(
+        "--easy_test",
+        action="store_true",
+        help="Evaluate on the 'easy' test set (make sure to set load_checkpoint)",
+    )
+    argparser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Evaluate on the validation set (make sure to set load_checkpoint)",
+    )
+    argparser.add_argument(
+        "--redesign_file",
+        help="Redesign a part of the given file (.pickle proteinflow files or .pdb)",
+    )
+    argparser.add_argument(
+        "--redesign_positions",
+        help="Mask specific positions in the given file (only with redesign_file); e.g. A, A:5-10,30-40 (fasta-based numbering, 0-based, starts inclusive, author chain names)",
     )
     return argparser
 

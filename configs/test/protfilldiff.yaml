@@ -13,3 +13,4 @@ diffusion: true
 load_checkpoint: ./model_weights/protfilldiff.pt
 initial_patch_size: 128
 message_passing: gvpe
+num_diffusion_steps: 50
