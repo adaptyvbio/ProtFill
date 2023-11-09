@@ -18,6 +18,7 @@ import sys
 from copy import deepcopy
 from math import sqrt
 from itertools import product
+from datetime import datetime
 
 
 def get_mse_loss(att_mse, mask):
@@ -466,10 +467,11 @@ def run(args, trial=None):
         "initial_patch_size": args.initial_patch_size,
     }
 
-    training_dict = os.path.join(args.dataset_path, "splits_dict", "train.pickle")
-    validation_dict = os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
-    test_dict = os.path.join(args.dataset_path, "splits_dict", "test.pickle")
-    excluded_dict = os.path.join(args.dataset_path, "splits_dict", "excluded.pickle")
+    if args.redesign_file is None:
+        training_dict = os.path.join(args.dataset_path, "splits_dict", "train.pickle")
+        validation_dict = os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
+        test_dict = os.path.join(args.dataset_path, "splits_dict", "test.pickle")
+        excluded_dict = os.path.join(args.dataset_path, "splits_dict", "excluded.pickle")
 
     print("\nDATA LOADING")
     use_frac = 1.0
@@ -491,7 +493,7 @@ def run(args, trial=None):
         test_loader = ProteinLoader(test_set, **LOAD_PARAM)
     elif args.redesign_file is not None:
         test_set = ProteinDataset(
-            dataset_folder=os.path.join(args.dataset_path, "test"),
+            dataset_folder=None,
             debug_file_path=args.redesign_file,
             force_binding_sites_frac=args.val_force_binding_sites_frac,
             **DATA_PARAM,
@@ -922,7 +924,6 @@ def make_parser():
     argparser.add_argument(
         "--dataset_path",
         type=str,
-        required=True,
         help="Path for loading training data (a folder with training, test, validation and splits_dict subfolders, proteinflow style)",
     )
     argparser.add_argument(
