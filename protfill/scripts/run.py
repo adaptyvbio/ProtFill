@@ -487,7 +487,7 @@ def run(args, trial=None):
             force_binding_sites_frac=args.val_force_binding_sites_frac,
             **DATA_PARAM,
         )
-        test_set.set_cdr(args.test_cdr)
+        test_set.set_cdr(args.redesign_cdr)
         test_loader = ProteinLoader(test_set, **LOAD_PARAM)
     elif args.redesign_file is not None:
         test_set = ProteinDataset(
@@ -496,7 +496,7 @@ def run(args, trial=None):
             force_binding_sites_frac=args.val_force_binding_sites_frac,
             **DATA_PARAM,
         )
-        test_set.set_cdr(args.test_cdr)
+        test_set.set_cdr(args.redesign_cdr)
         test_loader = ProteinLoader(test_set, **LOAD_PARAM)
     else:
         train_set = ProteinDataset(
@@ -1001,7 +1001,7 @@ def make_parser():
         help="Number of diffusion steps",
     )
     argparser.add_argument(
-        "--test_cdr",
+        "--redesign_cdr",
         choices=["L1", "L2", "L3", "H1", "H2", "H3"],
         default=None,
         help="Test on a single CDR",

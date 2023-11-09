@@ -146,6 +146,7 @@ wandb
 .neptune
 output
 *zip
+*egg-info
 
 test*txt
 test.py
