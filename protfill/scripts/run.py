@@ -1,24 +1,24 @@
 import argparse
+import os
 import os.path
-import time, os
+import random
+import sys
+import time
+import warnings
+from copy import deepcopy
+from datetime import datetime
+from itertools import product
+from math import sqrt
+
 import numpy as np
 import torch
 import torch.nn as nn
-import os.path
-import warnings
-import random
-from proteinflow import ProteinLoader, ProteinDataset
+from proteinflow import ProteinDataset, ProteinLoader
 from proteinflow.data import ProteinEntry
-from protfill.model import (
-    ProtFill,
-)
 from tqdm import tqdm
+
+from protfill.model import ProtFill
 from protfill.utils.model_utils import *
-import sys
-from copy import deepcopy
-from math import sqrt
-from itertools import product
-from datetime import datetime
 
 
 def get_mse_loss(att_mse, mask):
@@ -471,7 +471,9 @@ def run(args, trial=None):
         training_dict = os.path.join(args.dataset_path, "splits_dict", "train.pickle")
         validation_dict = os.path.join(args.dataset_path, "splits_dict", "valid.pickle")
         test_dict = os.path.join(args.dataset_path, "splits_dict", "test.pickle")
-        excluded_dict = os.path.join(args.dataset_path, "splits_dict", "excluded.pickle")
+        excluded_dict = os.path.join(
+            args.dataset_path, "splits_dict", "excluded.pickle"
+        )
 
     print("\nDATA LOADING")
     use_frac = 1.0

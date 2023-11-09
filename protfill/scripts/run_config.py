@@ -1,5 +1,6 @@
 import yaml
-from protfill.scripts.run import parse, run, make_parser
+
+from protfill.scripts.run import make_parser, parse, run
 
 
 def main():

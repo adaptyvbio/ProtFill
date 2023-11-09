@@ -1,18 +1,20 @@
 from __future__ import print_function
-import torch
-from torch import nn
-import torch.nn.functional as F
-import numpy as np
-from einops import repeat, rearrange
-from copy import deepcopy
-import os
-from proteinflow.data import ProteinEntry
 
+import os
+from copy import deepcopy
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from einops import rearrange, repeat
+from proteinflow.data import ProteinEntry
+from torch import nn
+from torch.utils.checkpoint import checkpoint
+
+from protfill.diffusion import Diffuser, get_orientations
 from protfill.layers.gvp import GVP_Decoder, GVP_Encoder
 from protfill.layers.gvpe import GVPe_Decoder, GVPe_Encoder
 from protfill.utils.model_utils import *
-from protfill.diffusion import Diffuser, get_orientations
-from torch.utils.checkpoint import checkpoint
 
 
 def combine_decoders(coords_decoder, seq_decoder, predict_angles):

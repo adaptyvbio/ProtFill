@@ -1,10 +1,12 @@
-from torch.nn import functional as F
-import torch
-from torch import nn
 import math
-from einops import repeat, rearrange
-from protfill.utils.model_utils import get_seq_loss
+
 import pandas as pd
+import torch
+from einops import rearrange, repeat
+from torch import nn
+from torch.nn import functional as F
+
+from protfill.utils.model_utils import get_seq_loss
 
 
 def linear_interpolation(coords, mask):

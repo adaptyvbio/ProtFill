@@ -1,6 +1,8 @@
-import torch, functools
-from torch import nn
+import functools
+
+import torch
 import torch.nn.functional as F
+from torch import nn
 
 try:
     from torch_geometric.nn import MessagePassing
@@ -12,9 +14,9 @@ except:
 
 
 from einops import rearrange
+
 from protfill.layers.base_models import *
-from protfill.utils.model_utils import get_vectors
-from protfill.utils.model_utils import from_pyg, to_pyg
+from protfill.utils.model_utils import from_pyg, get_vectors, to_pyg
 
 
 def tuple_sum(*args):

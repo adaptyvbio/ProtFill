@@ -1,10 +1,12 @@
-from torch import nn
+from math import sqrt
+
 import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
+from torch import nn
+
 from protfill.layers.base_models import *
-from protfill.utils.model_utils import get_vectors, pna_aggregate, gather_nodes
-from math import sqrt
+from protfill.utils.model_utils import gather_nodes, get_vectors, pna_aggregate
 
 
 def batch_select(input, indexes):

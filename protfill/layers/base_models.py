@@ -1,5 +1,6 @@
-from torch import nn
 from abc import abstractmethod
+
+from torch import nn
 
 
 class Encoder(nn.Module):

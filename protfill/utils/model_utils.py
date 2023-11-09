@@ -1,8 +1,9 @@
 from __future__ import print_function
-import torch
-from collections import defaultdict
-from einops import rearrange, repeat
 
+from collections import defaultdict
+
+import torch
+from einops import rearrange, repeat
 
 ALPHABET = "-ACDEFGHIKLMNPQRSTVWY"
 ALPHABET_DICT = defaultdict(lambda: 0)
