@@ -13,8 +13,6 @@ dependencies = [
     "yacs",
     "einops",
     "torch<=1.13",
-    "torch_scatter",
-    "torch_geometric",
     "pyyaml",
     "proteinflow>=2.3.1",
 ]
