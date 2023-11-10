@@ -14,7 +14,7 @@ dependencies = [
     "einops",
     "torch<=1.13",
     "pyyaml",
-    "proteinflow>=2.3.1",
+    "proteinflow>=2.4.0",
 ]
 
 [project.scripts]
